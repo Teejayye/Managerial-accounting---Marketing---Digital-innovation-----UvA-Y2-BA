@@ -1,4 +1,3 @@
-# Exam Room: UvA Block 1 study portal
 
    # Exam Room: UvA Block 1 study portal
 
