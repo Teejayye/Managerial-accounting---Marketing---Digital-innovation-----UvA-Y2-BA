@@ -1,5 +1,7 @@
 # Exam Room: UvA Block 1 study portal
 
+# https://teejayye.github.io/Managerial-accounting---Marketing---Digital-innovation-----UvA-Y2-BA/
+
 A study site for three courses:
 
 - **Digital Innovation and Entrepreneurship**
