@@ -436,6 +436,8 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
 .topbar { background: color-mix(in srgb, var(--bg) 97%, transparent); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .searchbar { background: #1c2130; } }
 :root[data-theme="dark"] .searchbar { background: #1c2130; }
+.verdict { font-weight: 500; line-height: 1.55; }
+.verdict b { font-weight: 700; }
 
 </style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d2433'/%3E%3Cpath d='M9 10h14M9 16h14M9 22h9' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
@@ -458,6 +460,16 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
     PORTAL.courses[c.id] = Object.assign({ topics: [], summary: [], glossary: [], questions: [], exams: [] }, PORTAL.courses[c.id] || {}, c);
   };
   PORTAL.addQuestions = function (cid, qs) { ensure(cid).questions.push(...qs.map((q) => scramble(q, q.id))); };
+  // Extra "why is this the right answer" notes, keyed by question id (practice) or examId#index (exams).
+  PORTAL._why = PORTAL._why || {};
+  PORTAL.addWhy = function (cid, map) { PORTAL._why[cid] = Object.assign(PORTAL._why[cid] || {}, map); };
+  function applyWhy() {
+    Object.keys(PORTAL._why).forEach((cid) => {
+      const c = PORTAL.courses[cid], m = PORTAL._why[cid]; if (!c) return;
+      c.questions.forEach((q) => { if (m[q.id]) q.why = m[q.id]; });
+      c.exams.forEach((e) => e.questions.forEach((q, i) => { if (m[e.id + "#" + i]) q.why = m[e.id + "#" + i]; }));
+    });
+  }
   PORTAL.addExams = function (cid, exams) {
     exams.forEach((e) => { if (e.shuffleOptions) e.questions = e.questions.map((q, i) => scramble(q, e.id + "-" + i)); });
     ensure(cid).exams.push(...exams);
@@ -512,7 +524,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
   const fmt = (n, d = 1) => (Math.round(n * Math.pow(10, d)) / Math.pow(10, d)).toFixed(d);
   // Live countdown: elements with data-cd="2026-10-19" are updated every second.
   const EXAM_HOUR = 9;
-  function examTime(iso) { return new Date(iso + "T" + String(EXAM_HOUR).padStart(2, "0") + ":00:00"); }
+  function examTime(iso) { const [d, t] = String(iso).split("T"); return new Date(d + "T" + (t || String(EXAM_HOUR).padStart(2, "0") + ":00") + ":00"); }
   function countdown(iso, compact) {
     const el = h("div", { class: "cd" + (compact ? " compact" : ""), "data-cd": iso || "" });
     tickOne(el); return el;
@@ -532,14 +544,14 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
   setInterval(() => document.querySelectorAll("[data-cd]").forEach(tickOne), 1000);
   function niceDate(iso) {
     if (!iso) return "";
-    return examTime(iso).toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" });
+    const t = examTime(iso); const hasTime = String(iso).includes("T"); return t.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long" }) + (hasTime ? ", " + String(iso).split("T")[1] : "");
   }
   function daysUntil(iso) {
     if (!iso) return null;
-    const t = new Date(iso + "T09:00:00"); const now = new Date();
+    const t = examTime(iso); const now = new Date();
     return Math.ceil((t - now) / 86400000);
   }
-  function examDate(c) { return store.dates[c.id] || c.examDate || ""; }
+  function examDate(c) { const own = store.dates[c.id]; if (own) { const t = (c.examDate || "").split("T")[1]; return t ? own + "T" + t : own; } return c.examDate || ""; }
   function topicTitle(c, tid) { const t = c.topics.find((x) => x.id === tid); return t ? t.short || t.title : tid; }
   function shuffle(a) { a = a.slice(); for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; }
   function parseNum(s) {
@@ -620,7 +632,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
     document.title = "Exam Room";
     const cards = PORTAL.order.map((id) => PORTAL.courses[id]).map((c) => {
       const s = courseStats(c); const d = examDate(c);
-      const dateInput = h("input", { type: "date", value: d, "aria-label": "Exam date for " + c.title, onchange: (e) => { store.dates[c.id] = e.target.value; save(); renderHub(); } });
+      const dateInput = h("input", { type: "date", value: (d || "").slice(0, 10), "aria-label": "Exam date for " + c.title, onchange: (e) => { store.dates[c.id] = e.target.value; save(); renderHub(); } });
       return h("article", { class: "ccard", style: { "--c": c.color } },
         h("div", null, h("div", { class: "code" }, c.code || ""), h("h2", null, c.title)),
         h("div", { class: "cd-wrap" }, h("div", { class: "cd-label" }, d ? "Exam · " + niceDate(d) : "Exam date"), countdown(d)),
@@ -666,7 +678,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
         h("div", { style: { display: "grid", gap: "20px" } },
           h("section", { class: "panel" },
             h("h2", { class: "sec" }, "Countdown & plan"), countdown(d),
-            h("div", { class: "datefield", style: { marginBottom: "12px" } }, "Exam date:", h("input", { type: "date", value: d, onchange: (e) => { store.dates[c.id] = e.target.value; save(); route(); } })),
+            h("div", { class: "datefield", style: { marginBottom: "12px" } }, "Exam date:", h("input", { type: "date", value: (d || "").slice(0, 10), onchange: (e) => { store.dates[c.id] = e.target.value; save(); route(); } })),
             h("ol", { class: "small", style: { paddingLeft: "20px", margin: "0 0 14px" } }, (c.plan || []).map((p) => h("li", { html: p }))),
             h("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } },
               h("a", { class: "btn primary", href: "#" + c.id + ".practice" }, "Start practising"),
@@ -767,8 +779,9 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
       let cls = "opt";
       if (reveal) { if (i === q.a) cls += " right"; else if (i === chosen) cls += " wrong"; }
       else if (i === chosen) cls += " sel";
-      const wt = q.w && q.w[i] ? (i === q.a ? q.w[i].replace(/^Correct[.:!]?\s*/i, "") : q.w[i]) : "";
-      const why = reveal && q.w && q.w[i] ? h("div", { class: "why", html: "<b>" + (i === q.a ? "Correct." : i === chosen ? "Your answer, wrong." : "Wrong.") + "</b> " + wt }) : null;
+      let wt = q.w && q.w[i] ? (i === q.a ? q.w[i].replace(/^Correct[.:!]?\s*/i, "") : q.w[i]) : "";
+      if (i === q.a && !wt.trim() && q.why) wt = q.why;
+      const why = reveal && wt ? h("div", { class: "why", html: "<b>" + (i === q.a ? "Correct." : i === chosen ? "Your answer, wrong." : "Wrong.") + "</b> " + wt }) : null;
       box.appendChild(h("button", { class: cls, type: "button", role: "radio", "aria-checked": i === chosen ? "true" : "false", disabled: reveal || null,
         onclick: () => onPick && onPick(i) }, h("span", { class: "bub" }, L[i]), h("span", { class: "txt", html: txt }), why));
     });
@@ -776,8 +789,15 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
   }
   function verdictMC(q, chosen) {
     const ok = chosen === q.a;
+    const clean = (t) => (t || "").replace(/^Correct[.:!]?\s*/i, "");
+    const why = (i) => { const t = q.w && q.w[i] ? clean(q.w[i]) : ""; return t.trim() ? t : (i === q.a && q.why ? q.why : ""); };
+    let html;
+    if (ok) html = "<b>Correct, well done.</b>" + (why(q.a) ? " Why: " + why(q.a) : "");
+    else if (chosen == null) html = "<b>Not answered.</b> The correct answer is " + L[q.a] + (why(q.a) ? ": " + why(q.a) : ".");
+    else html = "<b>Not quite.</b> You chose " + L[chosen] + (why(chosen) ? ", which is wrong because: " + why(chosen) : ".") +
+      "<br><b>The correct answer is " + L[q.a] + "</b>" + (why(q.a) ? ": " + why(q.a) : ".");
     return h("div", null,
-      h("div", { class: "verdict " + (ok ? "ok" : "no") }, ok ? "Correct, well done." : chosen == null ? "Not answered. The correct answer is " + L[q.a] + "." : "Not quite. The correct answer is " + L[q.a] + "."),
+      h("div", { class: "verdict " + (ok ? "ok" : "no"), html }),
       q.ex ? h("div", { class: "explain", html: q.ex }) : null);
   }
 
@@ -1075,7 +1095,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
   });
 
   PORTAL.start = route;
-  document.addEventListener("DOMContentLoaded", route);
+  document.addEventListener("DOMContentLoaded", () => { applyWhy(); route(); });
 })();
 
 </script>
@@ -1902,7 +1922,7 @@ PORTAL.addCourse({
   tagline: "Customer value, STP, branding, the 4Ps, communications and responsible marketing.",
   facts: [
     ["Format", "Digital exam in ANS: <b>60 multiple-choice questions</b>, 4 options, closed book. Questions are randomized in blocks per chapter; you can move back and forth until you submit."],
-    ["Grading", "Exam = 50% of the course grade, with <b>guessing correction</b> (the exam committee formula). Team papers and the presentation (10%) make up the rest."],
+    ["Grading", "Exam = <b>70%</b> of the course grade (minimum 5.5 needed), with <b>guessing correction</b>. Team project 30% (two papers + one presentation, 10% each; team average also ≥ 5.5)."],
     ["Material", "The <b>entire book</b> (Armstrong, Kotler & Balasubramanian, <i>Marketing: An Introduction</i>, 16th global ed.), also parts not covered in lectures; lecture slides; the guest lectures (incl. B Lab on B Corps); and three mandatory readings: Stahel (2016), Stoeckl & Luedicke (2015), White, Habib & Hardisty (2019, first 10 pages only)."],
     ["Not examined", "The lab-grown meat case questions and answers. You should still know what lab-grown meat is."],
     ["Lecturer's tips", "Think of the answer before reading the options. If two look right, pick the <i>best</i> one. Trust your gut: many MC mistakes come from changing a correct answer. Only rely on course material."]
@@ -3172,11 +3192,12 @@ PORTAL.addCourse({
   short: "Management Accounting",
   code: "Amsterdam Business School · dr B. Shi · 2026–27",
   color: "#3346a8",
-  examDate: "2026-10-21",
-  examNote: "Final exam: mostly calculations",
+  examDate: "2026-10-21T12:00",
+  examNote: "12:00–14:00, open questions (calculations + theory), digital in Ans",
   tagline: "Costing systems, CVP, relevant costs, budgets and variances, transfer pricing and performance measures.",
   facts: [
-    ["Final exam", "Digital, <b>mostly calculations</b> plus some theory. Old finals: 3 cases, 80 points, 2 hours, grade = points ÷ 8."],
+    ["Final exam", "Wednesday 21 October, 12:00–14:00, digital in Ans. <b>Open questions</b> (calculations and theory: definitions and ‘reasons why’). Old finals: 3 cases, 80 points, grade = points ÷ 8."],
+    ["Not examined", "Chapters 13 and 16; journal entries; ‘read only’ parts such as the reciprocal method (calculation), by-product accounting, learning curves, cost-plus target ROI pricing, life-cycle reports, activity-based budgeting, alternative definitions of investment."],
     ["Weight", "Final 70%, midterm 30% (the midterm has already been held)."],
     ["Content", "All material: about <b>⅓ pre-midterm</b> (ch. 1–7, 9, 11) and <b>⅔ post-midterm</b> (ch. 8, 10, 12, budgeting, 15, 17, 18–22)."],
     ["To pass", "Final ≥ 5.0 <b>and</b> weighted exam grade ≥ 5.5. The 0.5 SOWISO bonus only counts once you are at 5.5."],
@@ -4083,6 +4104,253 @@ PORTAL.addExams("ma", [
   cases: mid24Cases, questions: mid24 }
 ]);
 })();
+
+</script>
+<script>
+/* Why the correct answer is correct: Digital Innovation & Entrepreneurship */
+PORTAL.addWhy("die", {
+"die-p10": "Parker ch. 7 distinguishes core developers (employed by the platform) from extension developers: outside parties who add features, usually through an API.",
+"die-p11": "Parker et al. note an asymmetry: once a platform is proprietary it can open up, and a shared platform can tighten control, but not the other way round.",
+"die-p12": "Schilling's definition has two parts: the work must be new (novel) AND solve a problem (useful). Profitability or patents are not part of it.",
+"die-p14": "Complex, tacit knowledge doesn't travel well on paper; it needs face-to-face interaction and trust, so innovators locate close together (agglomeration).",
+"die-p15": "Schilling concludes that the richest source of innovation is not any single actor but collaborative networks linking firms, users, suppliers, universities and government.",
+"die-p17": "Price and brand effects wear off or are expensive; only network effects make the platform more valuable as it grows, which attracts more users: a self-reinforcing loop toward lock-in.",
+"die-p18": "Women and men are two sides; men value the presence of women (cross-side effect), so the club subsidizes the side that attracts the other and earns on the paying side.",
+"die-p22": "Parker ch. 2 calls it side switching: consumers become producers (and vice versa), which helps a platform scale both sides at once.",
+"die-p25": "Parker ch. 3: the core interaction is built from participants (producer and consumer), the value unit they exchange, and the filter that delivers the right value units.",
+"die-p28": "Parker's example: Craigslist is crude at facilitating and matching, but its huge, loyal audience (pull) keeps both sides coming back.",
+"die-p30": "Anti-design means leaving the platform open so users can invent uses the designers never planned; the user-invented hashtag is the classic example.",
+"die-p35": "The lecture stresses that angels add 'smart money': their experience, skills, networks and time are what young founders lack most.",
+"die-p36": "VCs are professional fund managers investing other people's money (limited partners); in return they take equity, often a board seat, and push toward an exit.",
+"die-p42": "Lenders only earn interest if the borrower repays, so they look at the team and the financials; product details matter more for reward crowdfunding.",
+"die-p44": "Leitão et al.'s taxonomy rests on human capital (staff expertise), social capital (networks) and organizational capital (facilities, structures).",
+"die-p45": "Y Combinator, founded in 2005, is seen as the first accelerator; Techstars followed in 2007.",
+"die-p49": "Piggybacking means connecting to an existing user base on another platform; PayPal targeted eBay buyers and sellers.",
+"die-p51": "Producer evangelism: attract producers who bring their own customers. Kickstarter creators promote their own campaigns to their fans.",
+"die-p56": "Visitors expected every event to be listed, so Zvents had to list organizers' events anyway; organizers knew they'd be listed free and had no reason to pay.",
+"die-p57": "Hiding contact details until payment prevents users from finding each other on the platform and then completing the deal outside it (leakage).",
+"die-p59": "Paying for premium placement is charging for enhanced access; Parker warns that users must be able to tell paid content from organic content or trust collapses.",
+"die-p60": "Charging too early kills network effects; Parker's rule is to build the user base and its value first, and monetize later (Myspace is the cautionary tale).",
+"die-p62": "Zhu & Iansiti: EachNet charged fees and blocked buyer–seller chat; Taobao was free, allowed chat, and earned from ads and storefront services, so users moved over.",
+"die-p64": "Network bridging links separate networks (payments, marketplaces, credit) so each strengthens the others, the Alibaba example in Zhu & Iansiti.",
+"die-p65": "Agrawal et al.: AI's core effect is making prediction cheap, so prediction gets used everywhere and its complements become more valuable.",
+"die-p66": "Judgment is deciding how much each possible outcome is worth (the payoff or reward), e.g. how bad a false fraud alarm is versus a missed fraud.",
+"die-p67": "Machines replace human prediction (substitute), but someone still has to judge payoffs; cheaper prediction makes that judgment more valuable (complement).",
+"die-p69": "Cromwell et al.: emergent thinking starts from what the technology can do and explores problems it could solve, rather than starting from a defined user problem.",
+"die-p71": "The 'explore' pathway creates value propositions customers don't know they need yet, so uncertainty is highest; a simple analogy helps the team converge on one idea.",
+"die-p72": "Labelled data means supervised learning; predicting a continuous number (not a category) is regression.",
+"die-p73": "Overfitting: the model has learned the training data, noise included, so it fails to generalize to new data.",
+"die-p75": "Hurwitz & Kirsch: data mining finds patterns for humans to interpret; machine learning uses patterns automatically to make predictions.",
+"die-p76": "Lean startup is built to test market demand quickly and cheaply; deep tech's main risk is whether the technology works at all, which needs long, costly R&D.",
+"die-p77": "Quantum advantage is reached when a quantum computer solves a problem that classical computers practically can't, not just any speed-up.",
+"die-p79": "With signage and rules, students found their group faster: the 'platform' cut search and coordination costs, which is how platforms create value.",
+"die-p81": "Open weights give the core value away, so DeepSeek must monetize what it still controls: hosted API access, enterprise services, tools.",
+"die-p82": "Users on several platforms at once (multi-homing) can switch easily, which pushes prices down and makes it hard for any one AI provider to profit.",
+"mock1#1": "Goodwin's quote illustrates Parker's point that platforms orchestrate resources owned by their community instead of owning assets themselves.",
+"mock1#2": "Visa changed its openness model twice, showing that openness is a spectrum of choices a platform can revise over time.",
+"mock1#3": "Wikipedia's open editing let anyone change the Meredith Kercher article, so quality and accuracy suffered. Parker uses it to show the risk of being too open without curation.",
+"mock1#5": "Schilling's example: Iddan was an outsider to medicine, so he wasn't locked into its assumptions; moderate knowledge plus a fresh view led to the PillCam.",
+"mock1#7": "This is Parker et al.'s definition: the value each user gets depends on how many users the platform has.",
+"mock1#9": "Asymmetric means one side matters far more to the other than the reverse; on Twitter and Quora a small group of producers draws a large audience.",
+"mock1#10": "Growth without curation brought in unwanted content; users had worse experiences and left. Classic negative network effects.",
+"mock1#12": "Parker ch. 3: the core interaction is the 'why'; pull, facilitate and match describe how the platform makes that interaction happen.",
+"mock1#13": "Boudreau & Lakhani: markets run on extrinsic rewards (prizes, money, career signals); communities run on intrinsic motivation.",
+"mock1#14": "In a product platform, outsiders build on the owner's core technology and sell their own products to customers (Gore-Tex, Intel Inside).",
+"mock1#15": "VCs invest millions at later stages, take equity and usually a board seat; angels invest less and usually don't take board control.",
+"mock1#16": "Each round dilutes the founders' percentage, but if the money grows the company's value, a smaller share of a bigger company is worth more.",
+"mock1#17": "Equity crowdfunders get shares, so they act like small-scale angels or VCs.",
+"mock1#19": "Incubators offer space, services and networks over an open-ended period, usually without funding; accelerators are fixed, cohort-based and fund for equity.",
+"mock1#20": "Erik Boer's route goes from exploring ideas, to building, to finding funding, to growing, all within the university ecosystem.",
+"mock1#22": "Pull marketing: the platform's value draws people in and marketing is part of the product (sharing, referrals), unlike push advertising.",
+"mock1#23": "A micromarket strategy starts in a small community whose members already interact, like Harvard students for Facebook.",
+"mock1#25": "Dropbox rewards both sides of a referral with storage, which costs little, so viral sharing is encouraged without spending cash.",
+"mock1#30": "Zhu & Iansiti argue that local clusters, multi-homing and weak bridging (network properties) matter more for Didi and Uber than sheer size.",
+"mock1#31": "The 70% is the prediction; deciding what to do given the costs of each mistake is judgment (Agrawal et al.).",
+"mock1#35": "Reinforcement learning learns by trial and error from rewards; there are no labels (supervised) and no clustering (unsupervised).",
+"mock1#36": "Deep tech faces mainly technological risk: long R&D, high upfront costs and uncertainty about whether it works at all.",
+"mock1#37": "Because quick, cheap iteration isn't possible, de Véricourt & Dahlander advise milestones for patient investors, partnerships and early contact with regulators.",
+"mock1#38": "Tutorial 1's lesson: a platform earns the right to capture value only after it creates value, here by cutting search and coordination frictions."
+});
+
+</script>
+<script>
+/* Why the correct answer is correct: Marketing */
+PORTAL.addWhy("mkt", {
+"mkt-p1": "Needs are basic states of felt deprivation (hunger); wants are the specific form those needs take, shaped by culture and personality (a burger vs. rice). Marketers shape wants, not needs.",
+"mkt-p4": "The marketing concept starts from customer needs and lets those drive what is made ('sense and respond'); the selling concept pushes what the firm already makes ('make and sell').",
+"mkt-p5": "Kotler: satisfaction = performance vs. expectations. Performance below expectations means dissatisfied, matching means satisfied, exceeding means delighted.",
+"mkt-p7": "Customer equity is the sum of the lifetime values of current AND potential customers, a measure of the firm's whole customer base, not of one customer.",
+"mkt-p8": "Cash cows have high share in a slow-growing market: little investment needed, lots of cash generated, which funds stars and question marks.",
+"mkt-p11": "Marketing control has four steps: set goals, measure performance, evaluate causes of gaps, then take corrective action to close them.",
+"mkt-p12": "The 4Cs: product → customer solution, price → customer cost, promotion → communication, place → convenience (how easily the customer can get it).",
+"mkt-p14": "Kotler's publics: financial publics are those affecting the ability to obtain funds (banks, investors, analysts); media, government and citizen publics are other groups.",
+"mkt-p15": "Core values are deeply held and passed on by family and institutions, so they barely change; secondary values are more open to change, so marketers can influence them.",
+"mkt-p18": "Secondary data already exist, so they are fast and cheap to get, but they were collected for another purpose and may be outdated, inaccurate or not relevant.",
+"mkt-p19": "Only an experiment manipulates one variable while controlling the others, which is needed to prove cause and effect; observation and surveys are descriptive or exploratory.",
+"mkt-p20": "Stratified random sampling: split the population into mutually exclusive groups (strata, here age groups), then draw a random sample from each.",
+"mkt-p21": "Focus groups have only 6–10 people, chosen non-randomly, so the findings can't be generalized to the whole market; they give depth, not representativeness.",
+"mkt-p22": "Self-concept (self-image) is a personal factor: people buy brands whose image matches how they see themselves ('we are what we have').",
+"mkt-p24": "Both the book and lecture conclude that subliminal messages may be perceived, but there's no solid evidence they change purchase behaviour.",
+"mkt-p25": "Low involvement plus small brand differences means habitual buying: people buy out of routine, not brand loyalty, and don't search much.",
+"mkt-p27": "Kotler's adoption process: awareness → interest → evaluation → trial → adoption. You can't evaluate before you're interested or adopt before trying.",
+"mkt-p28": "Divisibility is how far a new product can be tried on a limited basis; free samples or small sizes lower risk and speed adoption.",
+"mkt-p29": "Gatekeepers (e.g. assistants, purchasing agents) control the flow of information to the rest of the buying centre; deciders make the final choice.",
+"mkt-p30": "A straight rebuy reorders something routinely without modifications; a modified rebuy changes specs, price or supplier; a new task is a first purchase.",
+"mkt-p31": "Business demand is derived from consumer demand: a car-steel maker sells more only if consumers buy more cars.",
+"mkt-p32": "Splitting buyers into light, medium and heavy users is behavioural segmentation by usage rate.",
+"mkt-p33": "Effective segments must be differentiable: they must respond differently to marketing mixes. If men and women react the same, they are one segment.",
+"mkt-p34": "Concentrated (niche) marketing targets a large share of one or a few small segments, which is ideal when resources are limited.",
+"mkt-p36": "Kotler: if competitors tailor offers to each segment, an undifferentiated mass offer loses every segment to more specialized rivals, hence 'suicidal'.",
+"mkt-p37": "Kotler's criteria for a worthwhile difference: important, distinctive, superior, communicable, preemptive (competitors can't easily copy it), affordable, profitable.",
+"mkt-p39": "Kotler's format: To (target segment and need) our (brand) is (concept) that (point of difference). It names target, frame of reference and the reason to believe.",
+"mkt-p42": "Unsought products are things consumers don't know about or don't normally think of buying until they're prompted, like insurance and smoke detectors.",
+"mkt-p43": "Shopping products are bought less often and compared carefully on suitability, quality, price and style, like furniture or clothing.",
+"mkt-p44": "Product mix width = number of product lines; length = total items; depth = versions per item; consistency = how related the lines are.",
+"mkt-p45": "Stretching down adds lower-priced items below the current range; stretching up adds higher-priced ones.",
+"mkt-p46": "A hybrid offer contains roughly equal parts goods and services; a restaurant sells both food and service.",
+"mkt-p47": "Credence qualities are hard to evaluate even after consumption (medical, legal, repair services), so trust and reputation matter most.",
+"mkt-p48": "Services can't be stored for later sale or use: unused capacity tonight is lost forever. That is perishability.",
+"mkt-p49": "Supply-side tactics change capacity (part-time staff, shared facilities); demand-side tactics shift demand (off-peak pricing, reservations).",
+"mkt-p52": "Kotler's positioning levels: attributes (weakest, easy to copy), then benefits, then beliefs and values (strongest, emotional, hard to copy).",
+"mkt-p53": "A private or store brand is created and owned by the reseller (AH, Lidl's brands), not by the manufacturer.",
+"mkt-p55": "If the extension fails or doesn't fit, it can harm or blur what the parent brand stands for (dilution), and consumers may get confused.",
+"mkt-p57": "Business analysis reviews projected sales, costs and profits to see whether they meet company objectives, before product development starts.",
+"mkt-p58": "In maturity, most potential buyers have adopted the product, so sales growth slows and competition intensifies.",
+"mkt-p60": "A fad comes in quickly, is adopted with great enthusiasm, peaks early and declines fast; a fashion or style lasts longer.",
+"mkt-p61": "The ceiling is what customers think the product is worth: above that there's no demand. Costs set the price floor.",
+"mkt-p63": "Market skimming sets a high initial price to 'skim' revenue from buyers willing to pay most, then lowers price over time.",
+"mkt-p64": "Captive-product pricing: the main product is priced low and the supplies needed to use it (ink, razor blades) carry the margin.",
+"mkt-p66": "Dynamic pricing adjusts prices continually to individual customers and situations (demand, timing), as airlines and hotels do.",
+"mkt-p70": "Exclusive distribution gives a very limited number of dealers the exclusive right to sell, which supports a luxury image and dealer support.",
+"mkt-p71": "Push suits products where the brand choice is made in the store, with low loyalty and impulse buying, so trade promotion and sales force push it through the channel.",
+"mkt-p72": "Private labels give retailers higher margins and exclusive products shoppers can't buy elsewhere, which differentiates the store.",
+"mkt-p73": "Brokers and agents only bring buyers and sellers together for a commission; unlike merchant wholesalers, they never own (take title to) the goods.",
+"mkt-p74": "Percentage-of-sales sets the budget from current sales, so sales drive promotion; logically, promotion should drive sales.",
+"mkt-p75": "Noise is unplanned static or distortion (competing messages) during communication, which means the receiver gets a different message than sent.",
+"mkt-p76": "Building awareness requires reaching many people quickly and cheaply; advertising and publicity do that, while personal selling matters more later (conviction, purchase).",
+"mkt-p77": "Reach = % of the target market exposed during a period; frequency = how many times the average person sees it; impact = the qualitative value of an exposure.",
+"mkt-p78": "Samples let consumers try the product for free, which is very persuasive but costly to produce and distribute.",
+"mkt-p79": "Selling process: prospecting → preapproach → approach → presentation → handling objections → closing → follow-up.",
+"mkt-p80": "Reminder advertising helps maintain customer relationships and keeps consumers thinking about a product in the maturity stage (Coca-Cola ads).",
+"mkt-p83": "Stoeckl & Luedicke's 'society seduction and degeneration' covers how marketing seduces people into harmful habits, such as over-consumption and debt.",
+"mkt-p84": "Community co-optation and commercialization covers marketing taking over public and community spaces: unsolicited outdoor ads, chain stores replacing local culture.",
+"mkt-p86": "White et al.'s SHIFT: Social influence (norms), Habit, Individual self, Feelings and cognition, Tangibility. 'Most guests do X' is a descriptive social norm.",
+"mkt-p87": "White et al.'s challenges are the self–collective trade-off, long time horizons and abstractness; product quality isn't one of them.",
+"x2013#2": "Kotler lists the main service differentiators as ordering ease, delivery, installation, customer training, customer consulting, and maintenance and repair.",
+"x2013#3": "Holistic marketing has four parts: relationship, integrated, internal and social responsibility (performance) marketing. The last covers ethical, environmental, legal and social concerns.",
+"x2013#4": "Share of voice = the company's advertising for a product divided by all advertising for that product (category), i.e. its share of the advertising 'noise'.",
+"x2013#7": "The marketing intelligence system supplies everyday 'happenings' data on the environment; the internal records system supplies results data (orders, sales).",
+"x2013#8": "Kotler distinguishes fads (short, unpredictable) from trends (momentum and durability, reveal the future) and megatrends (large and long-lasting).",
+"x2013#11": "A small, targeted group with a moderator, a discussion guide and recordings is the textbook description of a focus group.",
+"x2013#12": "Marketing metrics are the set of measures used to quantify, compare and interpret marketing performance (e.g. awareness, share, CLV).",
+"x2013#15": "Customer-perceived value = total customer benefit − total customer cost; total customer benefit is the monetary value of the economic, functional and psychological benefits.",
+"x2013#16": "Kotler's STP: segmentation identifies groups, targeting selects which segment(s) to enter, positioning places the offer in their minds.",
+"x2013#18": "Each firm focuses on one segment (small cars, sports cars) to gain strong knowledge and a strong position there: single-segment concentration.",
+"x2013#23": "Communicating category membership by associating with well-known members of the category is called using exemplars.",
+"x2013#24": "Kotler's differentiation bases include product, personnel, channel, image and services; a better delivery system is a service differentiator.",
+"x2013#26": "A flank defense erects outposts to protect a weak front or support a possible counterattack.",
+"x2013#27": "A frontal attack matches the opponent's product, ad, price and distribution head-on; the side with greater resources usually wins.",
+"x2013#28": "Unsought goods are unknown to consumers or not normally thought of buying, so they need advertising and personal selling.",
+"x2013#29": "Satisfaction is a person's judgment of a product's perceived performance in relation to expectations.",
+"x2013#30": "The product mix (or assortment) is the set of ALL products and items a seller offers; a product line is a group within it.",
+"x2013#31": "Credence qualities are hard to evaluate even after consumption (e.g. surgery); search qualities can be checked before purchase, experience qualities after.",
+"x2013#32": "Intangibility: services can't be seen, tasted, felt, heard or smelled before purchase, so buyers look for tangible evidence of quality.",
+"x2013#34": "Under overcapacity, intense competition or changing wants, Kotler says survival becomes the major pricing objective (prices only cover variable and some fixed costs).",
+"x2013#35": "Demand is inelastic when quantity hardly changes in response to a price change; elastic demand reacts strongly.",
+"x2013#36": "Average cost = total cost divided by production at that level, i.e. cost per unit.",
+"x2013#37": "Everyday low pricing charges a constant low price with few or no temporary promotions (Walmart); high–low pricing uses frequent promotions.",
+"x2013#40": "Exclusive distribution severely limits the number of intermediaries; selective uses more than a few, intensive uses as many as possible.",
+"x2013#41": "Kotler's channel-cost comparison shows the Internet has the lowest cost per transaction, far below sales force or retail.",
+"x2013#43": "Wholesaling covers all activities in selling to those who buy for resale or business use; retailing sells to final consumers.",
+"x2013#44": "Public relations and publicity include internal programmes (employees) and external ones (consumers, firms, government, media) to promote or protect the image.",
+"x2013#45": "Noise is random and competing messages that may interfere with the intended communication.",
+"x2013#46": "At the awareness stage, advertising and publicity work best because they reach many people cheaply; personal selling matters more at conviction and ordering.",
+"x2013#47": "TV's main advantage is vividly demonstrating product attributes and persuasively explaining benefits, through sight, sound and motion.",
+"x2013#48": "The planning cycle is analysis → planning → implementation → control; control measures results, diagnoses and takes corrective action.",
+"x2013#50": "Warranties are explicit or implicit promises that the product will perform as specified, or that the seller will fix or refund it.",
+"x2013#51": "The seven Cs of website design: context, content, community, customization, communication, connection, commerce. Context is layout and design.",
+"x2013#52": "Blogs are regularly updated online journals or diaries, an important word-of-mouth channel.",
+"x2013#54": "Most new-product activity is improving existing products; truly new-to-the-world products are a small share of launches.",
+"x2013#55": "Social marketing applies marketing to further a social cause, done by nonprofits or government.",
+"x2012#0": "Car rental, hairdressing and consulting are mainly intangible activities that don't result in ownership of anything: services.",
+"x2012#1": "Kotler's demand states: negative demand means consumers dislike something and pay to avoid it. Julia dislikes pollution and pays extra to avoid it.",
+"x2012#3": "Internal marketing ensures everyone in the organization, especially senior management, embraces appropriate marketing principles.",
+"x2012#4": "Reach is the number of different persons or households exposed at least once during the period; frequency counts repeated exposures.",
+"x2012#5": "Integrative growth = growth through backward, forward or horizontal integration within the industry; intensive and diversification growth are the other routes.",
+"x2012#6": "The final section of the marketing plan is implementation and controls: monthly or quarterly goals and budgets so management can review and adjust.",
+"x2012#8": "Core beliefs and values are passed from parents to children and reinforced by institutions, which is why they are very persistent; secondary ones change more easily.",
+"x2012#9": "Buying competitors' products, attending trade shows and reading their reports use external networks to gather intelligence.",
+"x2012#10": "Exploratory research sheds light on the real nature of a problem and suggests solutions or ideas; descriptive measures, causal tests cause and effect.",
+"x2012#11": "Ethnographic research uses anthropology and other social sciences, observing people in their own environment for deep cultural understanding.",
+"x2012#12": "Open-end questions let respondents answer in their own words, revealing more about how they think; closed-end questions are easier to tabulate.",
+"x2012#13": "Total customer cost is the bundle of costs to evaluate, obtain, use and dispose of an offering (money, time, energy, psychological).",
+"x2012#14": "Mystery shoppers pose as customers to report on strong and weak points of the service experience in every store.",
+"x2012#15": "CRM aims to produce high customer equity through loyalty: keeping and growing profitable relationships.",
+"x2012#16": "Geographic segmentation divides by nations, regions, cities or neighbourhoods.",
+"x2012#19": "VALS strivers are trendy, fun-loving and resource-constrained; they buy stylish products that imitate those of wealthier consumers.",
+"x2012#20": "Brand equity is the added value a brand gives products and services, reflected in how consumers think, feel and act.",
+"x2012#21": "BrandAsset Valuator: differentiation, relevance, esteem and knowledge. Knowledge measures awareness and familiarity.",
+"x2012#23": "Points-of-difference are strongly associated, positively evaluated attributes consumers believe they can't find to the same extent with a competitor; points-of-parity are shared.",
+"x2012#24": "Perceptual maps visually represent consumer perceptions and preferences of brands on key dimensions.",
+"x2012#27": "Market nichers lead a small market or niche rather than following in a large one.",
+"x2012#28": "Maturity is when sales growth slows because most potential buyers have accepted the product.",
+"x2012#29": "The marketing concept is customer-centred: find the right products for your customers, not the right customers for your products (that's the selling concept).",
+"x2012#30": "Convenience goods are bought frequently, immediately and with minimum effort (e.g. soft drinks, newspapers).",
+"x2012#31": "Packaging levels: primary (the container), secondary (protects primary, discarded at use), shipping package (for storage and transport).",
+"x2012#33": "Search qualities can be evaluated before purchase (colour, price); experience qualities after; credence qualities hardly even after.",
+"x2012#35": "Market-share maximization rests on the belief that higher volume brings lower unit costs and higher long-run profit, so prices are set low.",
+"x2012#36": "In a Dutch (descending) auction, a high price is lowered until someone accepts; English auctions go up.",
+"x2012#37": "An allowance is an extra payment designed to gain reseller participation in special programmes (e.g. advertising or display allowances).",
+"x2012#38": "Pull works when consumers see real differences between brands and are loyal, so they actively ask for the brand; push suits low loyalty and in-store choice.",
+"x2012#39": "A zero-level (direct) channel has no intermediaries: the manufacturer sells directly to the final customer.",
+"x2012#40": "In a vertical marketing system, producer, wholesaler(s) and retailer(s) act as one unified system rather than independent firms.",
+"x2012#41": "Full-service retailers offer the most help (salespeople, fitting, delivery), so they carry the highest operating costs.",
+"x2012#42": "Chat rooms let consumers talk to each other about products, a word-of-mouth platform; the others are company-controlled media.",
+"x2012#43": "In franchising the franchisor licenses its brand and system and collects initial fees and ongoing royalties from franchisees.",
+"x2012#44": "When competitors all spend roughly the same percentage of sales, the method keeps spending stable and reduces promotion wars; that is its one recognized advantage.",
+"x2012#45": "Hierarchy-of-effects: awareness → knowledge → liking → preference → conviction → purchase (cognitive, then affective, then behavioural).",
+"x2012#47": "TV combines sight, sound and motion with mass reach, which gives high attention and reach (though at high cost and with clutter).",
+"x2012#48": "Product placement = paying to have products appear in films or TV shows, a form of branded entertainment.",
+"x2012#49": "Corporate-level strategy decides which businesses and markets to be in (entering a new market); the business and product levels handle how to compete.",
+"x2012#50": "Buzz marketing creates excitement and publicity by unexpected or outrageous means, spread via word of mouth, online communities and blogs.",
+"x2012#51": "Demand-side methods measure sponsorship by its effect on consumers' brand knowledge (awareness, image); supply-side methods measure media exposure.",
+"x2012#52": "Direct marketing raises concerns about invasion of privacy (data use, unsolicited contact), a recognized drawback.",
+"x2012#53": "New-to-the-world products create an entirely new market; most launches are improvements, line additions or repositionings.",
+"x2012#54": "Established firms mostly innovate incrementally: they tweak existing products or vary a core product rather than create radically new ones.",
+"x2012#56": "A product-management organization pays off when a firm sells quite varied products, each needing its own dedicated manager.",
+"x2012#57": "Sustainability: meeting present needs without compromising future generations' ability to meet theirs."
+});
+
+</script>
+<script>
+/* Why the correct answer is correct: Managerial Accounting */
+PORTAL.addWhy("ma", {
+"ma-m4": "Actual overhead is only known at year-end, so actual costing gives late, fluctuating job costs; normal costing uses a budgeted rate set in advance, so costs are available immediately and stay stable month to month.",
+"ma-m5": "Set-up costs are incurred once per batch regardless of how many units are in it, so they vary with the number of batches, not with units (unit-level) or with products/the plant as a whole.",
+"ma-m6": "ABC traces set-up and order costs to the products that cause them; Y uses few batches and orders, so the old labour-hour rate loaded it with costs really caused by small-batch products: Y was overcosted and subsidized them.",
+"ma-m9": "Joint costs are incurred before the split-off whatever you decide afterwards, so they are sunk for the further-processing decision; only incremental revenue (+€0.50) vs incremental cost (+€1.00) matters, and that is a loss.",
+"ma-m12": "Absorption costing treats ALL manufacturing costs, fixed overhead included, as inventoriable; variable costing expenses fixed manufacturing overhead as a period cost.",
+"ma-m19": "Opportunity cost is not a cash outlay; it is the contribution you give up by using a limited resource here instead of in its best alternative use.",
+"ma-m20": "Rework adds nothing a customer would pay for; it only fixes a mistake, so it is a non-value-added cost to be eliminated.",
+"ma-m22": "A rolling (continuous) budget always looks the same distance ahead (e.g. 12 months) because a new period is added as soon as the current one ends.",
+"ma-m24": "A flexible budget recalculates budgeted revenues and costs at the ACTUAL output level, so the variance analysis compares like with like (unlike the static budget).",
+"ma-m25": "The manager is accountable for revenues (local promotions) and costs (staffing) but not for investments, which is exactly a profit centre; an investment centre would also need control over invested capital.",
+"ma-m30": "Appraisal costs are incurred to detect defects (inspection, testing); prevention costs stop defects from arising, and failure costs occur after the defect has happened.",
+"ma-m31": "In the theory of constraints only direct materials are treated as truly variable in the short run; all other operating costs are treated as fixed, so throughput contribution = revenue − direct materials.",
+"ma-m32": "Learning and growth covers the capabilities of people, systems and the organization, and training is an investment in employees' skills. The other perspectives are internal processes, customer and financial.",
+"ma-m34": "With JIT, inventories are close to zero, so tracking every cost through WIP adds little; backflush costing skips those journal entries and assigns costs at the end (completion or sale).",
+"midex#0": "Inventoriable costs (DM, DL, manufacturing overhead) sit on the balance sheet as inventory until the product is sold, then become COGS; period costs (selling, admin, R&D) are expensed in the period incurred.",
+"midex#2": "A cost driver must have a CAUSE-AND-EFFECT relation with the cost: when the driver changes, total cost changes. That is what Horngren's definition stresses.",
+"midex#8": "ABC adds the most when indirect costs are a large share AND products consume activities in very different ways; then one volume-based rate distorts costs most.",
+"midex#21": "Theoretical and practical capacity measure what the plant CAN produce (supply side); normal and master-budget capacity utilisation measure what customers are expected to demand.",
+"mid2024#0": "Horngren defines a cost object as anything for which a separate measurement of costs is desired, e.g. a product, service, project, customer or department.",
+"mid2024#5": "A cost driver causally affects total costs over a given time span; correlation alone isn't enough. Changing the driver must change the cost.",
+"mid2024#8": "FIFO assigns closing WIP the most recent (current-period) prices; if prices rose, those are higher, while weighted average blends in older, cheaper opening stock.",
+"mid2024#17": "Under absorption costing, part of the fixed manufacturing overhead stays in closing inventory when production exceeds sales; that cost is deferred to a later period, so this period's profit rises.",
+"mid2024#20": "CVP assumes that changes in revenue and cost come only from changes in output (units), alongside linear behaviour, a known split into fixed and variable, and a constant sales mix.",
+"mid2024#22": "Relevant costs are expected FUTURE costs that DIFFER between alternatives; past (historical/sunk) costs can't be changed by any decision, so they can't differ between options.",
+"mid2024#23": "In the short run (spare capacity, no effect on regular sales), a special order adds profit whenever its incremental revenue covers its incremental costs; fixed costs that don't change are irrelevant."
+});
 
 </script>
 </body>
