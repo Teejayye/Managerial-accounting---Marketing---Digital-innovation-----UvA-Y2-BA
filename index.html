@@ -439,6 +439,18 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
 .verdict { font-weight: 500; line-height: 1.55; }
 .verdict b { font-weight: 700; }
 
+/* v3: question-set switch (Practice) */
+.setbar { margin: 0 0 14px; }
+.setswitch { display: inline-flex; flex-wrap: wrap; }
+.setswitch button { font-weight: 600; }
+.tabs { overflow-x: auto; scrollbar-width: none; }
+.tabs::-webkit-scrollbar { display: none; }
+.tabs a { white-space: nowrap; }
+@media (max-width: 560px) {
+  .setswitch { display: flex; width: 100%; border-radius: 14px; }
+  .setswitch button { flex: 1; border-radius: 10px; padding: 8px 6px; font-size: 13px; }
+}
+
 </style>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d2433'/%3E%3Cpath d='M9 10h14M9 16h14M9 22h9' stroke='%23fff' stroke-width='3' stroke-linecap='round'/%3E%3C/svg%3E">
 </head>
@@ -460,6 +472,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
     PORTAL.courses[c.id] = Object.assign({ topics: [], summary: [], glossary: [], questions: [], exams: [] }, PORTAL.courses[c.id] || {}, c);
   };
   PORTAL.addQuestions = function (cid, qs) { ensure(cid).questions.push(...qs.map((q) => scramble(q, q.id))); };
+  PORTAL.addExtra = function (cid, qs) { const c = ensure(cid); c.extra = c.extra || []; c.extra.push(...qs.map((q) => scramble(Object.assign({ src: "Extra practice" }, q), q.id, true))); };
   // Extra "why is this the right answer" notes, keyed by question id (practice) or examId#index (exams).
   PORTAL._why = PORTAL._why || {};
   PORTAL.addWhy = function (cid, map) { PORTAL._why[cid] = Object.assign(PORTAL._why[cid] || {}, map); };
@@ -471,15 +484,16 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
     });
   }
   PORTAL.addExams = function (cid, exams) {
-    exams.forEach((e) => { if (e.shuffleOptions) e.questions = e.questions.map((q, i) => scramble(q, e.id + "-" + i)); });
+    exams.forEach((e) => { if (e.shuffleOptions) e.questions = e.questions.map((q, i) => scramble(q, e.id + "-" + i, !!e.ai)); });
     ensure(cid).exams.push(...exams);
   };
   // Written questions get their options in a fixed pseudo-random order (seeded by id), so the right
   // answer isn't always in the same position. Past exams keep their original order.
-  function scramble(q, seed) {
+  function scramble(q, seed, mix) {
     if (q.t && q.t !== "mc") return q;
     if (q.keepOrder || !Array.isArray(q.o) || q.o.some((x) => /\babove\b|\bboth\b|^all |^none /i.test(x))) return q;
     let s = 0; for (let i = 0; i < seed.length; i++) s = (s * 31 + seed.charCodeAt(i)) >>> 0;
+    if (mix) { s ^= s >>> 16; s = Math.imul(s, 0x85ebca6b) >>> 0; s ^= s >>> 13; s = Math.imul(s, 0xc2b2ae35) >>> 0; s ^= s >>> 16; }
     const rnd = () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; };
     const idx = q.o.map((_, i) => i);
     for (let i = idx.length - 1; i > 0; i--) { const j = Math.floor(rnd() * (i + 1)); [idx[i], idx[j]] = [idx[j], idx[i]]; }
@@ -602,7 +616,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
       } }, "Light / dark")));
   }
   function tabs(c, view) {
-    const items = [["overview", "Overview"], ["summary", "Summary & search"], ["practice", "Practice"], ["exams", "Past & mock exams"]];
+    const items = [["overview", "Overview"], ["summary", "Summary & search"], ["practice", "Practice"], ["exams", "Past & mock exams"], ["ai", "AI generated exam"]];
     return h("div", { class: "wrap" }, h("nav", { class: "tabs" },
       items.map(([v, label]) => h("a", { href: "#" + c.id + (v === "overview" ? "" : "." + v), class: v === view ? "on" : "" }, label))));
   }
@@ -639,7 +653,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
         h("div", { class: "datefield" }, h("span", null, "Change date:"), dateInput, c.examNote ? h("span", { class: "examnote" }, c.examNote) : null),
         h("div", { class: "stats" },
           h("div", { class: "stat" }, h("b", null, s.mastered + "/" + s.total), h("span", null, "practice correct")),
-          h("div", { class: "stat" }, h("b", null, String(c.exams.length)), h("span", null, "past/mock exams")),
+          h("div", { class: "stat" }, h("b", null, String(c.exams.filter((e) => !e.ai).length)), h("span", null, "past/mock exams")),
           h("div", { class: "stat" }, h("b", null, s.best == null ? "–" : fmt(s.best)), h("span", null, "best exam grade"))),
         h("div", { class: "bar", title: "Share of practice questions answered correctly" }, h("i", { style: { width: (s.total ? (100 * s.mastered) / s.total : 0) + "%" } })),
         h("div", { class: "actions" },
@@ -804,10 +818,12 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
   // ------------------------------------------------------------------ PRACTICE
   const P = {}; // practice state per course
   function renderPractice(c) {
-    const st = (P[c.id] = P[c.id] || { topic: "all", mode: "all", order: null, idx: 0, answers: {}, right: 0, done: 0 });
+    const st = (P[c.id] = P[c.id] || { set: "core", topic: "all", mode: "all", order: null, idx: 0, answers: {}, right: 0, done: 0 });
+    if (!st.set) st.set = "core";
+    const list = () => (st.set === "extra" ? c.extra || [] : c.questions);
     const p = prog(c.id);
     function pool() {
-      return c.questions.filter((q) => (st.topic === "all" || q.topic === st.topic) && (
+      return list().filter((q) => (st.topic === "all" || q.topic === st.topic) && (
         st.mode === "all" ? true : st.mode === "new" ? !p[q.id] : st.mode === "wrong" ? p[q.id] && !p[q.id].c : st.mode === "bm" ? bms(c.id).includes(q.id) : true));
     }
     function rebuild() { st.order = shuffle(pool().map((q) => q.id)); st.idx = 0; st.answers = {}; st.right = 0; st.done = 0; }
@@ -816,9 +832,13 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
     const wrap = h("div", { class: "wrap" });
     function draw() {
       wrap.innerHTML = "";
-      const counts = {}; c.questions.forEach((q) => (counts[q.topic] = (counts[q.topic] || 0) + 1));
+      const counts = {}; list().forEach((q) => (counts[q.topic] = (counts[q.topic] || 0) + 1));
+      const sets = h("div", { class: "modes setswitch", role: "group", "aria-label": "Question set" },
+        [["core", "Practice questions", c.questions.length], ["extra", "Extra practice questions", (c.extra || []).length]].map(([v, label, n]) =>
+          h("button", { class: st.set === v ? "on" : "", onclick: () => { if (st.set === v) return; st.set = v; st.topic = "all"; st.mode = "all"; rebuild(); draw(); } }, label + " (" + n + ")")));
+      wrap.appendChild(h("div", { class: "setbar" }, sets));
       const chips = h("div", { class: "chips" },
-        h("button", { class: "chip" + (st.topic === "all" ? " on" : ""), onclick: () => { st.topic = "all"; rebuild(); draw(); } }, "All topics", h("span", { class: "n" }, c.questions.length)),
+        h("button", { class: "chip" + (st.topic === "all" ? " on" : ""), onclick: () => { st.topic = "all"; rebuild(); draw(); } }, "All topics", h("span", { class: "n" }, list().length)),
         c.topics.filter((t) => counts[t.id]).map((t) => h("button", { class: "chip" + (st.topic === t.id ? " on" : ""), onclick: () => { st.topic = t.id; rebuild(); draw(); } }, t.short || t.title, h("span", { class: "n" }, counts[t.id]))));
       const modes = h("div", { class: "modes", role: "group", "aria-label": "Which questions" },
         [["all", "All"], ["new", "Not tried yet"], ["wrong", "My mistakes"], ["bm", "Saved"]].map(([m, label]) =>
@@ -837,7 +857,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
             h("button", { class: "btn", onclick: () => { st.mode = "wrong"; rebuild(); draw(); } }, "Review my mistakes"))));
         return;
       }
-      const q = c.questions.find((x) => x.id === st.order[st.idx]);
+      const q = list().find((x) => x.id === st.order[st.idx]);
       wrap.appendChild(questionCard(c, q, st, draw));
     }
     draw();
@@ -893,8 +913,8 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
   }
 
   // ------------------------------------------------------------------ EXAMS LIST
-  function renderExamList(c) {
-    const rows = c.exams.map((e) => {
+  function renderExamList(c, ai) {
+    const rows = c.exams.filter((e) => !!e.ai === !!ai).map((e) => {
       const hist = exHist(c.id, e.id); const best = hist.reduce((m, x) => (m == null || x.grade > m ? x.grade : m), null);
       const draft = store.drafts[c.id + "." + e.id];
       return h("div", { class: "exrow" },
@@ -904,6 +924,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
           h("a", { class: "btn primary", href: "#" + c.id + ".exam." + e.id }, draft ? "Continue" : hist.length ? "Retake" : "Start")));
     });
     return h("main", null, h("div", { class: "wrap" },
+      ai ? h("div", { class: "note info", style: { marginBottom: "16px" }, html: c.aiIntro || "A full exam written by Claude from your study material and the course's previous exams. It follows the real exam's format, length and grading." }) :
       c.examIntro ? h("div", { class: "note info", style: { marginBottom: "16px" }, html: c.examIntro }) : null,
       rows.length ? h("div", { class: "exlist" }, rows) : h("div", { class: "empty" }, "No exams for this course yet.")));
   }
@@ -946,7 +967,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
             h("div", null, h("dt", null, "Questions"), h("dd", null, String(e.questions.length))),
             e.minutes ? h("div", null, h("dt", null, "Time"), h("dd", null, e.minutes + " minutes (the timer only shows elapsed time)")) : null,
             h("div", null, h("dt", null, "Grading"), h("dd", { html: e.gradingText || "" }))),
-          h("div", { class: "qnav", style: { justifyContent: "flex-start" } }, h("button", { class: "btn primary", onclick: start }, "Start exam"), h("a", { class: "btn ghost", href: "#" + c.id + ".exams" }, "Back"))));
+          h("div", { class: "qnav", style: { justifyContent: "flex-start" } }, h("button", { class: "btn primary", onclick: start }, "Start exam"), h("a", { class: "btn ghost", href: "#" + c.id + (e.ai ? ".ai" : ".exams") }, "Back"))));
         return;
       }
       const reviewing = !!draft.done;
@@ -1020,7 +1041,7 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
         sheet.appendChild(submit); sheet.appendChild(confirmBox);
         sheet.appendChild(h("button", { class: "btn ghost small", style: { marginTop: "8px", width: "100%", justifyContent: "center" }, onclick: () => { delete store.drafts[dk]; save(); draft = null; draw(); } }, "Discard and restart"));
       } else {
-        sheet.appendChild(h("a", { class: "btn", href: "#" + c.id + ".exams", style: { width: "100%", justifyContent: "center" } }, "Back to exams"));
+        sheet.appendChild(h("a", { class: "btn", href: "#" + c.id + (e.ai ? ".ai" : ".exams"), style: { width: "100%", justifyContent: "center" } }, "Back to exams"));
         sheet.appendChild(h("button", { class: "btn ghost", style: { marginTop: "8px", width: "100%", justifyContent: "center" }, onclick: () => { delete store.drafts[dk]; save(); draft = null; draw(); window.scrollTo({ top: 0 }); } }, "Retake"));
       }
 
@@ -1076,12 +1097,15 @@ mark { background: color-mix(in srgb, var(--mark) 85%, transparent); padding: 0 
     if (view === "summary") body = renderSummary(c);
     else if (view === "practice") body = renderPractice(c);
     else if (view === "exams") body = renderExamList(c);
-    else if (view === "exam") {
-      const e = c.exams.find((x) => x.id === parts[2]);
-      body = e ? renderExam(c, e) : renderExamList(c);
-    } else body = renderOverview(c);
-    page(topbar(c), view === "exam" ? null : head, tabs(c, view === "exam" ? "exams" : view), body);
+    else if (view === "ai") body = renderExamList(c, true);
+    let ex = null;
+    if (view === "exam") {
+      ex = c.exams.find((x) => x.id === parts[2]);
+      body = ex ? renderExam(c, ex) : renderExamList(c);
+    } else if (!body) body = renderOverview(c);
+    page(topbar(c), view === "exam" ? null : head, tabs(c, view === "exam" ? (ex && ex.ai ? "ai" : "exams") : view), body);
     if (view !== "summary") window.scrollTo({ top: 0 });
+    const onTab = document.querySelector(".tabs a.on"); if (onTab && onTab.scrollIntoView) onTab.scrollIntoView({ block: "nearest", inline: "center" });
   }
   window.addEventListener("hashchange", route);
 
@@ -4351,6 +4375,642 @@ PORTAL.addWhy("ma", {
 "mid2024#22": "Relevant costs are expected FUTURE costs that DIFFER between alternatives; past (historical/sunk) costs can't be changed by any decision, so they can't differ between options.",
 "mid2024#23": "In the short run (spare capacity, no effect on regular sales), a special order adds profit whenever its incremental revenue covers its incremental costs; fixed costs that don't change are irrelevant."
 });
+
+</script>
+<script>
+/* Digital Innovation & Entrepreneurship: extra practice questions + AI-generated exam (written by Claude) */
+(function () {
+const X = (id, topic, q, o, a, w, ex) => ({ id: "die-x" + id, topic, q, o, a, w, ex });
+
+PORTAL.addExtra("die", [
+/* ---- L1 ---- */
+X("1", "intro", "A start-up lets freelance translators and clients find each other, but it does not translate anything itself. In Parker's terms this is a…",
+ ["pipeline, because value flows from translator to client", "platform, because it enables interactions between external producers and consumers", "joint venture, because two groups are involved", "supply-side economy of scale"], 1,
+ ["A pipeline produces the value unit itself and pushes it down a chain; this firm produces nothing.", "Right: the firm only connects outside producers (translators) with consumers (clients), which is Parker's definition of a platform.", "A joint venture is an openness model with several sponsors and one manager, not a business type.", "Supply-side scale is about lower unit costs from producing more, which this firm doesn't do."]),
+X("2", "intro", "Which pair of terms does Parker use to describe how the platform firm 'inverts' its focus?",
+ ["From external to internal", "From orchestrating external resources to controlling internal ones", "From controlling internal resources to orchestrating external ones", "From pull marketing to push marketing"], 2,
+ ["The direction is the other way: platforms look outward.", "Reversed: pipelines control internal resources; platforms orchestrate external ones.", "Right: strategy shifts from controlling what you own to orchestrating what the community owns.", "Reversed: marketing moves from push to pull on platforms."]),
+X("3", "intro", "Sahut et al. (2021) call digital entrepreneurship 'augmented entrepreneurship'. What do they mean?",
+ ["It is a small niche next to traditional entrepreneurship", "It is traditional entrepreneurship reconciled with new, digital ways of creating and doing business", "It only concerns software start-ups", "It replaces entrepreneurs with algorithms"], 1,
+ ["They argue the opposite: it is not a niche sub-category.", "Right: all entrepreneurship is becoming digital, so DE extends ('augments') entrepreneurship as a whole.", "Their restaurant example shows even non-software firms must create digital value.", "Nothing in the paper says founders are replaced by algorithms."]),
+X("4", "intro", "In Sahut et al.'s information-processing framework, what is a 'friction'?",
+ ["A problem inside one phase of the information process", "An obstacle between two phases, e.g. between processing and distributing information", "A competitor's patent", "A legal restriction on crowdfunding"], 1,
+ ["Problems inside a phase are called 'challenges'.", "Right: frictions sit between phases; challenges sit within a phase.", "Not a term from the framework.", "Not a term from the framework."]),
+X("5", "intro", "A platform is open to developers but every outside app must be approved and pay the same listing fee, applied to everyone. According to Parker this platform is…",
+ ["closed, because there is a fee", "still open, because the restriction is reasonable and non-discriminatory", "a joint venture", "a shared model"], 1,
+ ["A fee alone does not make a platform closed.", "Right: Parker counts a platform as open if restrictions are reasonable and applied uniformly.", "Joint venture describes sponsor/manager structure, not developer rules.", "Shared models have many sponsors and many managers."]),
+X("6", "intro", "Schilling explains that firms doing their own R&D are better at using outside knowledge. This ability is called…",
+ ["technological spillover", "absorptive capacity", "agglomeration economy", "demand pull"], 1,
+ ["Spillovers are the benefits others get from your R&D.", "Right: absorptive capacity is the ability to recognize, assimilate and use external knowledge, built by in-house R&D.", "Agglomeration economies are benefits of locating near other firms.", "Demand pull is a model of where innovation comes from."]),
+X("7", "intro", "Why does Schilling say innovators cluster geographically (e.g. Silicon Valley)?",
+ ["Rents are lower there", "Complex, tacit knowledge needs face-to-face interaction and trust", "Governments forbid working elsewhere", "Clusters reduce competition"], 1,
+ ["Clusters usually have higher housing costs, a known downside.", "Right: tacit knowledge doesn't travel well on paper, so proximity matters.", "No such rule.", "Clusters actually increase competition, another downside."]),
+/* ---- L2 ---- */
+X("8", "net", "More people joining WhatsApp makes WhatsApp more useful for every user. This is a…",
+ ["positive same-side network effect", "positive cross-side network effect", "negative same-side network effect", "supply economy of scale"], 0,
+ ["Right: users benefit from more users of the same type.", "Cross-side effects run between two different groups (e.g. riders and drivers).", "The effect increases value, so it is positive.", "Supply economies of scale lower production cost; this is about demand-side value."]),
+X("9", "net", "On a food-delivery app, more restaurants make the app more attractive to customers, and more customers attract more restaurants. This is a…",
+ ["same-side effect", "cross-side (two-sided) network effect", "brand effect", "price effect"], 1,
+ ["Same-side means users of the same type affect each other.", "Right: two different groups attract each other.", "Brand effects come from reputation and advertising.", "Price effects come from discounts and are short-lived."]),
+X("10", "net", "According to Metcalfe's law, how many possible connections are there in a network of 10 users?",
+ ["10", "45", "90", "100"], 1,
+ ["That is just the number of users.", "Right: n(n−1)/2 = 10 × 9 / 2 = 45.", "Forgot to divide by 2.", "That is n²."]),
+X("11", "net", "A dating site grows fast, but users get flooded with unwanted messages and start leaving. What does Parker recommend?",
+ ["Stop all growth", "Add curation: filter and control access, activities and connections", "Charge everyone a high fee", "Remove the matching algorithm"], 1,
+ ["Parker wants growth, but managed growth.", "Right: curation turns negative network effects back into positive ones (OkCupid, Chatroulette).", "Charging everyone usually kills network effects.", "Matching is exactly what improves quality."]),
+X("12", "net", "In Parker's core interaction, which element is 'the hardest to control' because the platform does not make it?",
+ ["The participants", "The value unit", "The filter", "The currency"], 1,
+ ["Participants are recruited, but the hard part is what they produce.", "Right: producers create value units (listings, videos), so the platform has no control over its 'inventory'.", "The filter is the platform's own algorithm, so it controls it.", "Currency is one of three things exchanged, not part of the core interaction formula."]),
+X("13", "net", "Instagram requires only a few clicks to post a photo with a filter. Which platform function does this illustrate most?",
+ ["Pull", "Facilitate", "Match", "Curate"], 1,
+ ["Pull is about attracting and keeping users.", "Right: facilitate means tools and rules that make interaction easy.", "Match is about using data to connect the right users.", "Curation is part of quality control, not the main function here."]),
+X("14", "net", "Boudreau & Lakhani: a firm needs a problem solved that builds on decades of accumulated knowledge, and the contributors mostly enjoy learning and belonging. Which form fits?",
+ ["Competitive market", "Collaborative community", "Integrator platform", "Product platform"], 1,
+ ["Markets suit broad experimentation with extrinsic rewards.", "Right: cumulative problems and intrinsic motivation fit a community (like Linux).", "Integrator is a business-model choice, not community vs market.", "Product platform is also a business-model choice."]),
+X("15", "net", "Which business model gives the platform owner the MOST control over outside innovators (Boudreau & Lakhani)?",
+ ["Two-sided platform", "Product platform", "Integrator platform", "Shared platform"], 2,
+ ["Two-sided gives outsiders the most autonomy.", "In between: innovators sell directly to customers.", "Right: the integrator sits between innovators and customers and sells to customers itself (App Store).", "'Shared' is Parker's openness model, not a Boudreau & Lakhani business model."]),
+/* ---- L3 ---- */
+X("16", "fund", "A retired founder invests €80,000 of her own money in a start-up and mentors the team weekly. She is a…",
+ ["venture capitalist", "business angel", "limited partner", "crowdfunder"], 1,
+ ["VCs invest other people's money from a fund.", "Right: an angel invests her own money and brings 'smart money': skills, network and time.", "Limited partners put money into VC funds; they don't invest directly or mentor.", "Crowdfunding means many small contributors."]),
+X("17", "fund", "Why do venture capitalists push their portfolio companies toward an exit?",
+ ["Because the law requires it", "Because they must return money to their limited partners", "Because angels demand it", "Because exits reduce dilution"], 1,
+ ["No legal requirement.", "Right: VCs manage other people's money and earn returns through acquisitions or IPOs.", "Angels invest earlier and don't drive the VC's strategy.", "Exits don't reduce dilution; they realize value."]),
+X("18", "fund", "Backers on Kickstarter pay €120 and receive the product months later. This is…",
+ ["donation crowdfunding", "reward crowdfunding", "lending crowdfunding", "equity crowdfunding"], 1,
+ ["Donors receive nothing in return.", "Right: reward crowdfunding has become pre-ordering.", "Lenders get interest.", "Equity funders get shares."]),
+X("19", "fund", "Which statement about accelerators is correct (Leitão et al. / lecture)?",
+ ["They offer open-ended support without funding", "They run fixed-duration cohorts, give seed funding for equity and end with a demo day", "They are mainly government subsidies", "They always own the start-up afterwards"], 1,
+ ["That describes incubators.", "Right: cohorts, fixed time (3–6 months), seed money for equity, demo day.", "Accelerators are mostly private programmes.", "They take a minority equity stake, not ownership."]),
+X("20", "fund", "According to the CB Insights post-mortems shown in Lecture 3, what is the most common reason start-ups fail?",
+ ["Ran out of cash", "No market need", "Wrong team", "Outcompeted"], 1,
+ ["Second (29%).", "Right: 42% of failed start-ups built something nobody needed.", "Third (23%).", "Fourth (19%)."]),
+/* ---- L4 ---- */
+X("21", "launch", "A new freelance-cleaning platform first builds scheduling software that cleaning companies use on its own, then later opens a marketplace for customers. Which launch strategy?",
+ ["Piggyback", "Single-side", "Big-bang adoption", "Micromarket"], 1,
+ ["Piggyback taps another platform's user base.", "Right: build value for one side first (like OpenTable's reservation software), then add the other side.", "Big-bang uses push marketing for simultaneous on-boarding.", "Micromarket starts in a small, already-interacting community."]),
+X("22", "launch", "Airbnb posting its listings on Craigslist in its early days is an example of…",
+ ["piggybacking", "seeding", "marquee strategy", "producer evangelism"], 0,
+ ["Right: connecting to the user base of an existing platform.", "Seeding means creating value units yourself.", "Marquee means courting a key user group.", "Producer evangelism attracts producers who bring their own customers."]),
+X("23", "launch", "Which of these is NOT one of the four elements of viral growth in Parker ch. 5?",
+ ["Sender", "Value unit", "External network", "Venture capital"], 3,
+ ["Sender is an element.", "The value unit must be spreadable: an element.", "The external network is where content spreads: an element.", "Right: funding is not part of the viral loop (sender, value unit, external network, recipient)."]),
+X("24", "launch", "A platform charges a fee only when a deal is completed on the platform. What is the main risk?",
+ ["Fewer people sign up", "Users meet on the platform and then trade off-platform (leakage)", "Too much curation", "Higher development costs"], 1,
+ ["Transaction fees keep sign-up free, so growth is not the issue.", "Right: transaction fees give users a reason to bypass the platform.", "Unrelated.", "Unrelated."]),
+X("25", "launch", "Zhu & Iansiti: why is a ride-hailing network easier to attack than Airbnb's?",
+ ["Ride-hailing has stronger network effects", "Ride-hailing networks are split into local clusters, so a rival can win city by city", "Airbnb has no competitors", "Ride-hailing has no multi-homing"], 1,
+ ["Not the argument.", "Right: riders only care about drivers in their own city; Airbnb travellers care about hosts everywhere.", "Airbnb has competitors; its global network is just harder to attack.", "Ride-hailing has rampant multi-homing, which makes it worse."]),
+X("26", "launch", "Groupon hid how many deals it sold to stop rivals from poaching merchants. What happened, according to Zhu & Iansiti?",
+ ["Both sides stopped multi-homing", "Merchant multi-homing fell but consumer multi-homing rose", "Groupon's network effects became stronger on both sides", "Consumers stopped using Groupon entirely"], 1,
+ ["Not both sides.", "Right: reducing multi-homing on one side can increase it on the other.", "The point is the trade-off between sides.", "Overstated."]),
+/* ---- L5 ---- */
+X("27", "ai", "A hospital's AI says a patient has a 30% chance of a complication. The doctor decides whether to operate, weighing risks and benefits. The doctor's role is…",
+ ["prediction", "judgment", "data mining", "reinforcement learning"], 1,
+ ["The 30% figure is the prediction.", "Right: judgment is deciding the payoff of each outcome (Agrawal et al.).", "Data mining is exploring data for patterns.", "A learning method, not a human role."]),
+X("28", "ai", "A model groups customers into segments without being told what the segments are. Which type of machine learning?",
+ ["Supervised regression", "Supervised classification", "Unsupervised learning", "Reinforcement learning"], 2,
+ ["Supervised learning needs labels.", "Classification also needs labelled categories.", "Right: no labels, the algorithm finds clusters itself.", "Reinforcement learning uses rewards from trial and error."]),
+X("29", "ai", "Khan Academy adds an AI tutor for students and an assistant for teachers. In Cromwell et al.'s framework this is…",
+ ["exploiting the current value proposition", "expanding the value proposition", "exploring a new value proposition", "design thinking"], 1,
+ ["Exploit strengthens what you already offer in the same way.", "Right: solving new, complementary problems for customers (Khanmigo is the paper's example).", "Explore creates something customers don't know they need yet.", "Design thinking starts from a defined user problem; the paper contrasts it with emergent thinking."]),
+/* ---- L6 ---- */
+X("30", "deep", "Why does de Véricourt & Dahlander's article argue that classic lean startup fits deep tech badly?",
+ ["Deep tech has no customers", "Its main risk is technological, and each iteration is slow, costly and regulated", "Investors forbid experiments", "Deep tech firms don't need funding"], 1,
+ ["Deep tech has customers; the issue is whether the technology works.", "Right: lean reduces market uncertainty with fast, cheap tests, which deep tech can't run.", "Not the argument.", "Deep tech needs a lot of patient capital."])
+]);
+
+/* ================================ AI-GENERATED EXAM ================================ */
+const M = (q, o, a, w, topic) => ({ topic, q, o, a, w });
+PORTAL.addExams("die", [{
+  id: "ai1", ai: true, shuffleOptions: true, kind: "AI generated exam (by Claude)", title: "DIE practice final: 40 new questions",
+  sub: "Written from your summaries, readings, cases and the style of the mock exam. Every lecture is covered, plus the cases.",
+  info: "This exam was written by Claude, not by your lecturer. It mirrors the real format (individual, computer-based multiple choice, 4 options) and covers lectures, readings and cases in roughly equal parts. Use it as extra practice, not as a prediction of the actual questions.",
+  minutes: 90,
+  grading: { type: "guess", guess: 10 },
+  gradingText: "Guessing correction for 4 options: grade = 10 × (correct − 10) / 30, minimum 1. A 5.5 needs 27 correct.",
+  questions: [
+M("Which statement best captures the difference between a pipeline and a platform?", ["A pipeline creates value through a linear chain it controls; a platform enables value-creating interactions between external producers and consumers", "A pipeline uses the internet; a platform does not", "A pipeline has no customers", "A platform always owns its inventory"], 0,
+ ["Right: this is Parker's core distinction.", "Many pipelines are online too (e.g. a web shop selling its own products).", "Pipelines obviously have customers.", "Platforms typically own no inventory."], "intro"),
+M("Kindle Direct Publishing lets authors publish without a publisher's editors. Which reason for platform success does this show?", ["Platforms invert the firm", "Platforms scale by eliminating gatekeepers", "Platforms use supply economies of scale", "Platforms avoid data"], 1,
+ ["Related, but the specific mechanism here is removing gatekeepers.", "Right: reader feedback replaces editors as the filter.", "Platforms grow on demand-side economies of scale.", "Platforms rely heavily on data."], "intro"),
+M("Google lets Samsung, Xiaomi and others build phones on Android, while Google keeps control of the core technology. Which openness model is this?", ["Proprietary", "Licensing", "Joint venture", "Shared"], 1,
+ ["Proprietary means one sponsor and one manager (Apple iOS).", "Right: one sponsor (Google), many managers (the phone makers).", "Joint venture: several sponsors, one manager.", "Shared: many sponsors and many managers (Linux)."], "intro"),
+M("Parker warns that a platform's own extension developers can become a threat. Why?", ["They may grow big enough to displace the platform", "They always demand equity", "They reduce network effects to zero", "They are illegal under EU law"], 0,
+ ["Right: an extension can become a platform itself (SAP and ADP).", "Not the argument.", "They usually add network effects.", "No such rule."], "intro"),
+M("Schilling defines creativity as the ability to produce work that is…", ["profitable and patentable", "novel and useful", "new to the world and expensive", "technical and scientific"], 1,
+ ["Profit and patents are not part of the definition.", "Right: both novelty and usefulness are required.", "Cost is irrelevant to the definition.", "Creativity is not limited to technical work."], "intro"),
+M("According to Schilling, what is the most important source of innovation?", ["In-house R&D alone", "Individual inventors", "Collaborative networks linking firms, users, suppliers, universities and government", "Government grants"], 2,
+ ["Firms rate their own R&D highly, but Schilling stresses combining sources.", "Important, but not the main source.", "Right: innovation increasingly comes from networks.", "One actor in the network."], "intro"),
+M("Sahut et al. (2021) point to a 'neglected digital divide'. What do they mean?", ["Between rich and poor countries only", "Between digitally savvy entrepreneurs and those who struggle to go digital", "Between hardware and software firms", "Between investors and founders"], 1,
+ ["Not their focus.", "Right: some entrepreneurs fall behind in creating digital value.", "Not their focus.", "Not their focus."], "intro"),
+M("Why were Instagram and WhatsApp worth billions despite having few employees?", ["Their patents", "Their network: users who create value for each other", "Their office buildings", "Their supply economies of scale"], 1,
+ ["Not the lecture's explanation.", "Right: network effects, not assets or staff, drove the valuations.", "They owned very few assets.", "They grew on demand-side economies of scale."], "net"),
+M("The lecture contrasts price effects, brand effects and network effects. Which creates the self-reinforcing loop that leads to lock-in?", ["Price effects", "Brand effects", "Network effects", "Virality"], 2,
+ ["Price effects are short-lived; few freemium users convert.", "Brand effects are expensive and hard to sustain.", "Right: only network effects make the platform more valuable as it grows.", "Virality brings people in but doesn't by itself keep value growing."], "net"),
+M("On a video platform, a small group of creators attracts a huge audience, while viewers matter much less to creators individually. This is an example of…", ["a negative same-side effect", "an asymmetric cross-side network effect", "a supply economy of scale", "disintermediation"], 1,
+ ["The effect between creators and viewers is positive and cross-side.", "Right: cross-side effects are often stronger in one direction (like Twitter or Quora).", "Not a production-cost effect.", "Disintermediation means bypassing the platform."], "net"),
+M("Chatroulette grew from 20 to 1.5 million users in months, then collapsed. What was missing?", ["Frictionless entry", "Curation", "Virality", "Funding"], 1,
+ ["Entry was already frictionless; that was part of the problem.", "Right: without filtering, negative network effects took over.", "It was very viral.", "Funding wasn't the cause in Parker's account."], "net"),
+M("Why did Google's PageRank scale better than Yahoo's directory?", ["It used more human editors", "It harnessed the links that web-page producers already made", "It charged websites to be listed", "It had a bigger marketing budget"], 1,
+ ["Yahoo relied on human editors, which didn't scale.", "Right: algorithms let the crowd do the work.", "Not the reason.", "Not the reason."], "net"),
+M("In Parker ch. 3, a 'filter' is…", ["a legal restriction on users", "an algorithmic tool that delivers relevant value units to the right consumers", "a price discount", "a type of developer"], 1,
+ ["Not Parker's meaning.", "Right: e.g. a search query or news-feed algorithm.", "No.", "No."], "net"),
+M("Craigslist survives despite weak facilitation and matching. Which function keeps it strong?", ["Pull", "Facilitate", "Match", "Monetize"], 0,
+ ["Right: its large, loyal audience keeps both sides coming back.", "Weak, as the question says.", "Weak, as the question says.", "Not one of the three functions."], "net"),
+M("A video-game company holds a contest where many independent developers compete for prize money. In Boudreau & Lakhani's terms this is a…", ["collaborative community", "competitive market", "product platform", "joint venture"], 1,
+ ["Communities run on intrinsic motivation and sharing.", "Right: extrinsic rewards and broad experimentation define a market.", "Product platform is a business model.", "Not relevant."], "net"),
+M("Funding rounds dilute the founders. Why can founders still be better off?", ["Dilution increases their percentage", "A smaller share of a much more valuable company can be worth more", "Dilution removes VCs from the board", "Dilution is only temporary"], 1,
+ ["Dilution lowers the percentage.", "Right: growth in value compensates for the lower percentage.", "VCs usually take a board seat.", "Dilution is permanent unless shares are bought back."], "fund"),
+M("Which type of crowdfunding is the oldest and, by market size, the largest?", ["Donation", "Reward", "Lending (peer-to-peer)", "Equity"], 2,
+ ["Smaller.", "Smaller.", "Right: P2P lending is the oldest type and by far the largest market.", "Equity is much smaller."], "fund"),
+M("A founder pitches on a peer-to-peer lending platform. Which part of the business plan will lenders care about most?", ["The product's design", "The team and the financials: can the loan be repaid?", "The brand name", "The number of social media followers"], 1,
+ ["Reward funders focus on the product.", "Right: lenders earn only if they are repaid.", "Minor.", "Minor."], "fund"),
+M("Leitão et al. (2022) build their taxonomy of incubators and accelerators on three pillars. Which set is correct?", ["Financial, physical and legal capital", "Human, social and organizational capital", "Seed, series A and series B", "Space, time and money"], 1,
+ ["Not the taxonomy.", "Right: staff expertise, networks, and facilities/structures.", "Those are funding rounds.", "Not the taxonomy."], "fund"),
+M("Which of Isenberg's ecosystem domains matches 'Amsterdam relies heavily on foreign venture capital'?", ["Culture", "Availability of appropriate finance", "Human capital", "Institutional supports"], 1,
+ ["Culture covers attitudes to risk and success.", "Right: the weakness concerns access to finance.", "Human capital is about talent.", "Institutional supports are legal, accounting and similar services."], "fund"),
+M("PayPal paid users $10 to sign up and $10 for each referral. What problem was it solving?", ["Leakage", "The chicken-or-egg problem", "Multi-homing", "Negative network effects"], 1,
+ ["Leakage is about off-platform transactions.", "Right: getting both sides on board at the start.", "Not the main issue at launch.", "Not the problem being solved."], "launch"),
+M("Twitter used a festival (SXSW 2007) with big screens to get many people on board at once. Which launch strategy?", ["Big-bang adoption", "Micromarket", "Seeding", "Follow the rabbit"], 0,
+ ["Right: push marketing for simultaneous on-boarding.", "Micromarket starts in an existing small community.", "Seeding means creating value units yourself.", "Follow the rabbit starts as a pipeline."], "launch"),
+M("Reddit's founders created fake profiles and posted content themselves at the start. Which strategy?", ["Seeding", "Marquee", "Producer evangelism", "Piggyback"], 0,
+ ["Right: the platform acts as the first producer.", "Marquee courts key users.", "Producer evangelism attracts producers who bring customers.", "Piggyback taps another network."], "launch"),
+M("Which statement about seeding versus 'follow the rabbit' is correct?", ["Both start as pipelines", "Seeding is two-sided from the start; follow the rabbit starts as a pipeline and opens up later", "Follow the rabbit is two-sided from the start", "They are the same strategy"], 1,
+ ["Seeding is two-sided from day one.", "Right: that is the distinction Parker draws.", "Reversed.", "They differ."], "launch"),
+M("Parker's monetization 'golden rule' is…", ["charge everyone from day one", "users first, monetization later", "always charge producers", "never charge anyone"], 1,
+ ["Charging early kills network effects (Myspace).", "Right: build value and the user base before charging.", "Depends on where the excess value lies.", "Platforms must capture value eventually."], "launch"),
+M("Meetup started charging organizers $19 per month and activity fell 95%. What does Parker conclude?", ["Charging is always wrong", "Quality rose, so some negative effect combined with curation can be healthy", "Meetup should have charged consumers instead", "Meetup lost all network effects"], 1,
+ ["Not Parker's point.", "Right: about half of meetups now succeeded, against 1–2% before.", "Not the point.", "Overstated."], "launch"),
+M("Yelp sells businesses a premium spot at the top of search results. Which monetization tool, and what does Parker warn about it?", ["Transaction fee; leakage", "Enhanced access; users must be able to tell paid content from organic content", "Enhanced curation; exclusivity", "Access fee; developers leave"], 1,
+ ["No transaction is charged here.", "Right: paid placement is enhanced access, and trust collapses if paid and organic look the same.", "Curation is about guaranteed quality.", "Not the case here."], "launch"),
+M("Zhu & Iansiti: Alibaba linked its marketplaces with Alipay and later credit services. This property is called…", ["network clustering", "network bridging", "multi-homing", "disintermediation"], 1,
+ ["Clustering is about local vs global networks.", "Right: connecting networks so they strengthen each other.", "Multi-homing is users on several platforms.", "Disintermediation is users bypassing the platform."], "launch"),
+M("A cleaning platform finds that once clients and cleaners meet, they arrange future jobs directly. Which risk is this?", ["Multi-homing", "Disintermediation", "Clustering", "Negative same-side effects"], 1,
+ ["Multi-homing means using several platforms at once.", "Right: members bypass the hub after the match (the Homejoy case).", "Clustering is about network structure.", "Not this."], "launch"),
+M("Agrawal, Gans & Goldfarb say AI has made one thing much cheaper. What?", ["Judgment", "Prediction", "Data storage only", "Human labour"], 1,
+ ["Judgment becomes more valuable, not cheaper.", "Right: AI is best seen as a drop in the cost of prediction.", "Storage got cheaper, but that's not the paper's argument.", "Not the argument."], "ai"),
+M("A boat-racing AI scored points by circling instead of finishing the race. Which problem does this illustrate?", ["Overfitting", "A badly specified reward function", "Too little data", "Unsupervised learning"], 1,
+ ["Overfitting is about training data vs new data.", "Right: reward function engineering must match the true goal.", "Not the issue.", "It was reinforcement learning."], "ai"),
+M("Cromwell et al. contrast emergent thinking with design thinking. Emergent thinking…", ["starts from a clearly defined user problem", "starts from the technology's core functions and explores which problems it could solve", "avoids experiments", "is only for large firms"], 1,
+ ["That is design thinking.", "Right: useful when a technology is new and there is no clear problem yet.", "It involves improvising and testing.", "Not limited to large firms."], "ai"),
+M("For which ChatGPT pathway do Cromwell et al. recommend converging on 'a clear, coherent analogy'?", ["Exploit", "Expand", "Explore a new value proposition", "All three equally"], 2,
+ ["Exploit uses the tool openly to strengthen what exists.", "Expand breaks the value proposition into parts.", "Right: the most uncertain pathway needs a simple analogy to align the team.", "The advice is specific to the explore pathway."], "ai"),
+M("Which is an example of supervised classification?", ["Predicting tomorrow's temperature", "Labelling emails as spam or not spam using labelled examples", "Grouping customers without labels", "A robot learning to walk through rewards"], 1,
+ ["Predicting a number is regression.", "Right: labelled data, categorical output.", "That is unsupervised clustering.", "That is reinforcement learning."], "ai"),
+M("Hurwitz & Kirsch: what distinguishes machine learning from data mining?", ["ML uses patterns automatically to make predictions; data mining finds patterns for humans to interpret", "They are identical", "Data mining requires neural networks", "ML cannot handle big data"], 0,
+ ["Right: that is the book's distinction.", "They differ in goal.", "No.", "ML thrives on big data."], "ai"),
+M("DeepSeek releases open model weights. From a monetization perspective, what must it do?", ["Charge for the weights", "Earn from what it still controls, such as hosted API access, enterprise services and tools", "Ban competitors", "Stop releasing models"], 1,
+ ["The weights are given away.", "Right: when the core is free, monetize the complements you control.", "Not feasible.", "Not the point."], "cases"),
+M("Users switch freely between ChatGPT, Claude and other AI models. In Zhu & Iansiti's terms this pervasive multi-homing…", ["makes it easier for any one provider to raise prices", "pushes prices down and makes profits harder", "creates strong lock-in", "removes all network effects"], 1,
+ ["The opposite.", "Right: easy switching weakens each provider's pricing power.", "Multi-homing is the opposite of lock-in.", "Overstated."], "cases"),
+M("Which risk does a deep-tech venture mainly face, compared with a typical app start-up?", ["Market risk only", "Technological risk: will it work at all?", "No risk", "Only legal risk"], 1,
+ ["App start-ups mainly face market risk.", "Right: long R&D, high upfront costs and uncertain feasibility.", "Deep tech is very risky.", "Regulation matters, but technological risk is the core."], "deep"),
+M("What is 'quantum advantage'?", ["Any quantum computer that runs faster than a laptop", "A quantum computer performing a calculation that classical computers practically cannot", "A patent on quantum chips", "Using quantum computers for accounting"], 1,
+ ["Too loose.", "Right: that is the definition used in the reading.", "No.", "No."], "deep"),
+M("Tutorial 1: after the lecturer added signs and rules, students found their groups much faster. Which platform idea does this show best?", ["Platforms create value by reducing search and coordination costs", "Platforms always charge for access", "Platforms eliminate all rules", "Platforms only work online"], 0,
+ ["Right: governance and wayfinding lowered frictions, then the platform could capture value.", "Not shown here.", "The platform added rules.", "The experiment was offline."], "cases")
+  ]
+}]);
+})();
+
+</script>
+<script>
+/* Marketing: extra practice questions + AI-generated exam (written by Claude) */
+(function () {
+const X = (id, topic, q, o, a, w, ex) => ({ id: "mkt-x" + id, topic, q, o, a, w, ex });
+
+PORTAL.addExtra("mkt", [
+/* ---- ch 1–2 ---- */
+X("1", "basics", "A student is hungry (need), wants a falafel wrap (want) and has €6 to pay for it. The €6 turns the want into a…",
+ ["need", "demand", "market offering", "exchange"], 1,
+ ["The need is the hunger itself.", "Right: a demand is a want backed by buying power.", "A market offering is what the seller provides.", "Exchange is the act of getting something by giving something in return."]),
+X("2", "basics", "A railway company defines itself as 'a train operator' and misses the rise of shared e-scooters and car-sharing. This is…",
+ ["the selling concept", "marketing myopia", "societal marketing", "customer equity"], 1,
+ ["The selling concept is about aggressive promotion.", "Right: focusing on your product instead of the need it serves (getting from A to B).", "Societal marketing balances society's interests.", "Customer equity is a value measure."]),
+X("3", "basics", "A customer expected a 'good' hotel and found it exceptional. According to the book she is…",
+ ["dissatisfied", "satisfied", "delighted", "indifferent"], 2,
+ ["Dissatisfied means performance fell short.", "Satisfied means performance matched expectations.", "Right: performance exceeded expectations.", "Not a category in the book."]),
+X("4", "basics", "Which customer group has high profit potential but little loyalty?",
+ ["True friends", "Butterflies", "Barnacles", "Strangers"], 1,
+ ["True friends are profitable and loyal.", "Right: enjoy them while they're here, then stop investing.", "Barnacles are loyal but not very profitable.", "Strangers have little fit on either dimension."]),
+X("5", "basics", "In the BCG matrix, a business with low market share in a fast-growing market is a…",
+ ["star", "cash cow", "question mark", "dog"], 2,
+ ["Stars have high share in a growing market.", "Cash cows have high share in a slow market.", "Right: it needs cash and must be built up or phased out.", "Dogs have low share in a slow market."]),
+X("6", "basics", "Albert Heijn starts selling its existing private-label products in Belgium. Which Ansoff strategy?",
+ ["Market penetration", "Market development", "Product development", "Diversification"], 1,
+ ["Penetration means more sales to current markets.", "Right: current products, new (geographic) market.", "Product development means new products for current markets.", "Diversification means new products for new markets."]),
+X("7", "basics", "A firm checks every quarter whether its sales and profits match the annual plan. This is…",
+ ["strategic control", "operating control", "a SWOT analysis", "marketing implementation"], 1,
+ ["Strategic control asks whether the basic strategy still fits.", "Right: checking performance against the annual plan.", "SWOT is analysis, not control.", "Implementation turns the plan into action."]),
+/* ---- ch 3–4 ---- */
+X("8", "env", "Influencers and journalists who write about a company belong to which public?",
+ ["Financial publics", "Media publics", "Government publics", "Internal publics"], 1,
+ ["Financial publics affect access to funds.", "Right: media publics carry news, features and opinion.", "Government publics are regulators.", "Internal publics are employees."]),
+X("9", "env", "Rising energy prices and raw-material shortages belong to which macroenvironmental force?",
+ ["Demographic", "Natural", "Cultural", "Political"], 1,
+ ["Demographic concerns population.", "Right: the natural environment covers resources and pollution.", "Cultural concerns values.", "Political covers laws and pressure groups."]),
+X("10", "env", "A brand wants to know whether a new package design increases sales. Which research type should it use?",
+ ["Exploratory", "Descriptive", "Causal (experimental)", "Secondary"], 2,
+ ["Exploratory gathers ideas.", "Descriptive describes situations.", "Right: testing cause and effect requires an experiment.", "Secondary data were collected for another purpose."]),
+X("11", "env", "A researcher interviews the first 100 people who walk past the university library. This is a…",
+ ["simple random sample", "convenience sample", "stratified random sample", "quota sample"], 1,
+ ["Random sampling gives everyone a known chance.", "Right: the easiest people to reach.", "Stratified needs groups and random draws within them.", "Quota fills a set number per category."]),
+X("12", "env", "What is a 'customer insight'?",
+ ["Any data point in a database", "A fresh, evidence-based understanding of customers that becomes the basis for creating value", "A sales forecast", "A competitor's price list"], 1,
+ ["Raw data are not yet insights.", "Right: an insight explains the need behind the pattern.", "A forecast is a prediction, not an insight.", "That is competitive intelligence."]),
+/* ---- ch 5 ---- */
+X("13", "buyer", "A consumer notices only the ads that confirm the phone she already bought was a good choice. This is…",
+ ["selective attention", "selective distortion", "selective retention", "cognitive dissonance"], 1,
+ ["Attention is about what we notice at all.", "Right: interpreting information so it fits what we already believe.", "Retention is about what we remember.", "Dissonance is the discomfort itself; distortion is one way to reduce it."]),
+X("14", "buyer", "A student wants to join a top consulting firm, so she buys the same laptop bag consultants use. The consultants are her…",
+ ["membership group", "aspirational group", "dissociative group", "family"], 1,
+ ["She isn't a member yet.", "Right: a group she wants to belong to.", "Dissociative groups are avoided.", "Not family."]),
+X("15", "buyer", "A shopper switches between cookie brands just to try something new; involvement is low and brands differ. This is…",
+ ["complex buying behaviour", "dissonance-reducing behaviour", "habitual buying behaviour", "variety-seeking behaviour"], 3,
+ ["Complex needs high involvement.", "Dissonance-reducing needs high involvement and few differences.", "Habitual buying has few brand differences.", "Right: low involvement with significant brand differences."]),
+X("16", "buyer", "In the adopter categories, which group is described as 'opinion leaders'?",
+ ["Innovators", "Early adopters", "Early majority", "Late majority"], 1,
+ ["Innovators are venturesome.", "Right: early adopters (13.5%) are opinion leaders in their communities.", "Deliberate, adopt before the average person.", "Sceptical."]),
+X("17", "buyer", "A purchasing agent decides which sales reps get to speak to the engineers. In the buying centre he is a…",
+ ["user", "decider", "gatekeeper", "influencer"], 2,
+ ["Users use the product.", "Deciders approve the final choice.", "Right: gatekeepers control the flow of information.", "Influencers help set specifications."]),
+/* ---- ch 6 ---- */
+X("18", "stp", "A gym chain targets 'people who want to get fit before their wedding'. Which segmentation base?",
+ ["Demographic", "Geographic", "Behavioural (occasion)", "Psychographic (personality)"], 2,
+ ["Not age or income.", "Not location.", "Right: segmentation by occasion, an event that triggers the purchase.", "Not personality."]),
+X("19", "stp", "A segment is attractive, but the firm cannot reach it through any media or channels. Which requirement fails?",
+ ["Measurable", "Accessible", "Substantial", "Differentiable"], 1,
+ ["Its size can still be measured.", "Right: the segment must be reachable and servable.", "Size is not the problem.", "Response differences are not the problem."]),
+X("20", "stp", "Ryanair offers basic flights at very low prices. Which value proposition?",
+ ["More for more", "More for the same", "Less for much less", "More for less"], 2,
+ ["That is premium positioning.", "That attacks a premium rival on price.", "Right: no-frills for much less.", "Hard to sustain; Ryanair offers less."]),
+X("21", "stp", "Which part of a positioning statement is the 'frame of reference'?",
+ ["To (target segment and need)", "our (brand)", "is (concept)", "that (point of difference)"], 2,
+ ["That names the target.", "That names the brand.", "Right: the concept tells which category the brand belongs to.", "That is the reason to believe."]),
+/* ---- ch 7–8 ---- */
+X("22", "brand", "For a smartphone, the warranty and free cloud storage belong to which product level?",
+ ["Core customer value", "Actual product", "Augmented product", "Potential product"], 2,
+ ["Core value is the basic benefit (connection, convenience).", "Actual product covers features, design, brand and packaging.", "Right: additional services and benefits.", "Potential product is in the lecture's five-level model, not the book's three."]),
+X("23", "brand", "A consumer will only buy one specific brand of designer watch and travels to a special store for it. The watch is a…",
+ ["convenience product", "shopping product", "specialty product", "unsought product"], 2,
+ ["Convenience products are bought with minimal effort.", "Shopping products are compared on quality and price.", "Right: strong brand preference and special purchase effort.", "Unsought products aren't actively wanted."]),
+X("24", "brand", "A hairdresser's quality varies by stylist, day and time. Which service characteristic?",
+ ["Intangibility", "Inseparability", "Variability", "Perishability"], 2,
+ ["Intangibility means you can't see it before buying.", "Inseparability means production and consumption happen together.", "Right: quality depends on who, when, where and how.", "Perishability means it can't be stored."]),
+X("25", "brand", "In the BrandAsset Valuator, which two dimensions form 'brand strength'?",
+ ["Esteem and knowledge", "Differentiation and relevance", "Relevance and esteem", "Knowledge and differentiation"], 1,
+ ["That is brand stature.", "Right: brand strength predicts future growth.", "Mixed up.", "Mixed up."]),
+X("26", "brand", "Dove launches Dove deodorant and Dove shampoo, beyond its original soap. This is a…",
+ ["line extension", "brand extension", "multibrand", "co-brand"], 1,
+ ["A line extension stays in the same category (new soap variants).", "Right: an existing name moves into new categories.", "Multibrands are several brands in one category.", "Co-branding pairs two companies' brands."]),
+X("27", "brand", "In which NPD stage is the product's sales, cost and profit potential reviewed against company objectives?",
+ ["Idea screening", "Concept testing", "Business analysis", "Test marketing"], 2,
+ ["Screening applies criteria such as R-W-W.", "Concept testing checks appeal with consumers.", "Right: business analysis reviews projections.", "Test marketing tries the product in a realistic market setting."]),
+/* ---- ch 9–11 ---- */
+X("28", "price", "A game console is launched at €499 and the price drops each year. This is…",
+ ["penetration pricing", "market-skimming pricing", "captive-product pricing", "everyday low pricing"], 1,
+ ["Penetration starts low.", "Right: a high initial price that is lowered over time.", "Captive pricing is about the games, not the console's timing.", "EDLP keeps prices constantly low."]),
+X("29", "price", "Unit cost is €40 and the firm wants a 20% markup on sales. What is the markup price?",
+ ["€48", "€50", "€52", "€60"], 1,
+ ["That is a 20% markup on cost.", "Right: 40 ÷ (1 − 0.20) = €50.", "Doesn't follow the formula.", "That is 50% on cost."]),
+X("30", "price", "Cinemas charge less for afternoon shows than evening shows, though the costs are the same. This is…",
+ ["psychological pricing", "segmented (time) pricing", "promotional pricing", "by-product pricing"], 1,
+ ["Psychological pricing plays on perception (€9.99).", "Right: segmented pricing by time, not reflecting cost differences.", "Promotional pricing is temporary.", "By-product pricing sells waste."]),
+X("31", "place", "A manufacturer sells to wholesalers, who sell to retailers, who sell to consumers. How many levels does this channel have?",
+ ["Zero-level", "One-level", "Two-level", "Three-level"], 2,
+ ["Zero-level is direct.", "One intermediary.", "Right: two intermediary levels (wholesaler, retailer).", "That would need three intermediaries."]),
+X("32", "place", "McDonald's licenses its brand and system to local owners who pay royalties. This is a…",
+ ["corporate VMS", "contractual VMS (franchise)", "administered VMS", "horizontal marketing system"], 1,
+ ["Corporate VMS means common ownership.", "Right: franchising is a contractual VMS.", "Administered VMS is led by one powerful member.", "Horizontal systems join firms at the same level."]),
+X("33", "place", "Which type of wholesaler takes title to the goods?",
+ ["Brokers", "Agents", "Merchant wholesalers", "Manufacturers' agents"], 2,
+ ["Brokers don't take title.", "Agents don't take title.", "Right: merchant wholesalers own the goods they sell.", "Agents don't take title."]),
+/* ---- ch 12–15 ---- */
+X("34", "promo", "Which promotion budget method is called the most logical in the book?",
+ ["Affordable", "Percentage-of-sales", "Competitive-parity", "Objective-and-task"], 3,
+ ["It ignores promotion's effect on sales.", "It treats sales as the cause of promotion.", "Competitors aren't necessarily right.", "Right: set objectives, define tasks, cost them."]),
+X("35", "promo", "An ad shows a family having breakfast together and enjoying the product. Which execution style?",
+ ["Slice of life", "Fantasy", "Technical expertise", "Scientific evidence"], 0,
+ ["Right: typical people using the product in a normal setting.", "Fantasy creates a dream world.", "Shows the firm's know-how.", "Presents surveys or lab results."]),
+X("36", "promo", "In the personal selling process, what comes directly before the approach?",
+ ["Prospecting", "Preapproach", "Presentation", "Closing"], 1,
+ ["Prospecting comes first.", "Right: the preapproach is learning about the prospect before the visit.", "Presentation comes after the approach.", "Closing comes near the end."]),
+X("37", "promo", "A retailer receives €2,000 for placing a brand in a prominent end-of-aisle display. This is a…",
+ ["consumer promotion", "trade promotion (allowance)", "business promotion", "public relations"], 1,
+ ["Consumer promotions target end users.", "Right: trade promotions persuade resellers; allowances reward their support.", "Business promotions target business customers and sales forces.", "PR builds relations with publics."]),
+X("38", "promo", "What is the main public-policy concern about direct and digital marketing tested in the exams?",
+ ["High advertising costs", "Invasion of privacy", "Too much personal selling", "Low reach"], 1,
+ ["Not the main concern.", "Right: data collection and combination raise privacy issues.", "Not this.", "Not this."]),
+/* ---- ch 17 / readings ---- */
+X("39", "resp", "Which SHIFT factor does this message use: 'Your neighbours already use 15% less energy than you'?",
+ ["Social influence", "Habit formation", "Feelings and cognition", "Tangibility"], 0,
+ ["Right: a descriptive social norm comparing you with others.", "Habit uses prompts, defaults and feedback over time.", "Emotions and information.", "Making impacts concrete and near."]),
+X("40", "resp", "According to Stahel, which circular-economy loop is usually the most profitable and resource-efficient?",
+ ["Recycling materials", "The smallest loop: reuse and repair", "Landfill with energy recovery", "Selling more new products"], 1,
+ ["Recycling is a larger loop.", "Right: the smaller the loop, the better.", "That is linear.", "That is linear."])
+]);
+
+/* ================================ AI-GENERATED EXAM ================================ */
+const M = (q, o, a, w, topic) => ({ topic, q, o, a, w });
+PORTAL.addExams("mkt", [{
+  id: "ai1", ai: true, shuffleOptions: true, kind: "AI generated exam (by Claude)", title: "Marketing practice final: 60 new questions",
+  sub: "Covers the whole book (ch. 1–17), the lectures and the three mandatory readings, in the format of your ANS exam.",
+  info: "This exam was written by Claude, not by your lecturer. It mirrors the real format: 60 multiple-choice questions, 4 options, guessing correction. About 3–4 questions per chapter plus extra questions on the readings, which are guaranteed exam material.",
+  minutes: 120,
+  grading: { type: "guess", guess: 15 },
+  gradingText: "Guessing correction: grade = 10 × (correct − 15) / 45, minimum 1. A 5.5 needs about 40 correct.",
+  questions: [
+/* ch1 */
+M("According to the book, marketers do NOT create…", ["wants", "needs", "demands", "market offerings"], 1,
+ ["Marketers shape wants.", "Right: needs are a basic part of human makeup.", "Marketing influences demand.", "Marketers design offerings."], "basics"),
+M("A firm believes customers will buy its products only if it runs aggressive sales campaigns. Which orientation?", ["Production concept", "Product concept", "Selling concept", "Marketing concept"], 2,
+ ["Production focuses on availability and low price.", "Product focuses on quality and features.", "Right: large-scale selling and promotion.", "Marketing focuses on customer needs."], "basics"),
+M("Customer equity is…", ["the profit from one customer's last purchase", "the total combined customer lifetime values of all current and potential customers", "a customer's share of wallet", "the brand's financial value"], 1,
+ ["Too narrow.", "Right.", "That is share of customer.", "That is brand value."], "basics"),
+M("Increasing 'share of customer' is mainly achieved by…", ["finding new customers", "cross-selling and up-selling to existing customers", "lowering prices for everyone", "reducing advertising"], 1,
+ ["That grows the customer base, not the share of each customer's spending.", "Right: sell more of what they buy in your categories.", "Not the standard tool.", "Not related."], "basics"),
+/* ch2 */
+M("Which mission statement is market-oriented?", ["We make high-quality bicycles", "We help city dwellers move around freely, healthily and sustainably", "We are the largest bike manufacturer", "We sell 1 million bikes a year"], 1,
+ ["Product-oriented.", "Right: defined by the customer need served.", "About size.", "A target, not a mission."], "basics"),
+M("In the BCG matrix, what is the typical strategy for a cash cow?", ["Build", "Hold or harvest to generate cash for other units", "Divest immediately", "Invest heavily for growth"], 1,
+ ["Building is for question marks with potential.", "Right: cash cows fund stars and question marks.", "Divesting is mostly for dogs.", "The market isn't growing."], "basics"),
+M("In SWOT analysis, a new competitor entering the market is a(n)…", ["strength", "weakness", "opportunity", "threat"], 3,
+ ["Strengths are internal.", "Weaknesses are internal.", "Opportunities are favourable external factors.", "Right: an unfavourable external factor."], "basics"),
+M("Seen from the customer's side (the 4Cs), 'price' corresponds to…", ["customer solution", "customer cost", "convenience", "communication"], 1,
+ ["That is product.", "Right.", "That is place.", "That is promotion."], "basics"),
+/* ch3 */
+M("Which is part of the company's MICROenvironment?", ["Demographic trends", "Suppliers", "Inflation", "Cultural values"], 1,
+ ["Macro.", "Right: actors close to the company.", "Macro (economic).", "Macro (cultural)."], "env"),
+M("Gen Z is best described as…", ["born 1946–64", "sensible shoppers born 1965–76", "digital natives born after 2000", "the largest group of retirees"], 2,
+ ["Baby boomers.", "Gen X.", "Right.", "Not Gen Z."], "env"),
+M("A firm lobbies government and runs campaigns to change public opinion on its industry. According to the book it is…", ["reactive", "proactive", "myopic", "demographic"], 1,
+ ["Reactive firms adapt.", "Right: proactive firms try to shape the environment.", "Unrelated.", "Unrelated."], "env"),
+/* ch4 */
+M("Which is a disadvantage of secondary data?", ["They are expensive", "They take long to collect", "They may be outdated or not fit the problem", "They are always biased"], 2,
+ ["They are usually cheap.", "They are usually quick.", "Right.", "Overstated."], "env"),
+M("A researcher lives with families for weeks to observe how they cook. This is…", ["survey research", "ethnographic research", "a focus group", "an experiment"], 1,
+ ["Surveys ask questions.", "Right: observation in the natural environment.", "Focus groups are moderated group discussions.", "Experiments manipulate variables."], "env"),
+M("Which sampling method divides the population into groups such as city blocks and then samples whole groups?", ["Simple random", "Stratified random", "Cluster (area)", "Quota"], 2,
+ ["Not grouped.", "Stratified samples randomly from each group.", "Right.", "Quota is non-probability."], "env"),
+M("Asking a respondent 'why is that important to you?' over and over, moving from attributes to values, is called…", ["netnography", "laddering", "neuromarketing", "sampling"], 1,
+ ["Online ethnography.", "Right (lecture).", "Brain and biometric measurement.", "Choosing respondents."], "env"),
+/* ch5 */
+M("Which factor is the most basic cause of a person's wants and behaviour, according to the book?", ["Culture", "Social class", "Personality", "Family"], 0,
+ ["Right.", "A cultural factor, but not the most basic.", "Personal factor.", "Social factor."], "buyer"),
+M("Buying an expensive carpet where brands look alike, then worrying afterwards, is…", ["complex buying behaviour", "dissonance-reducing buying behaviour", "variety-seeking behaviour", "habitual behaviour"], 1,
+ ["Complex has large brand differences.", "Right: high involvement and few differences.", "Low involvement.", "Low involvement."], "buyer"),
+M("What do the book and lecture conclude about subliminal advertising?", ["It strongly changes behaviour", "There is no good evidence that it changes behaviour", "It is the most effective ad type", "It only works on children"], 1,
+ ["Not supported.", "Right.", "No.", "No."], "buyer"),
+M("Which product characteristic slows adoption?", ["High relative advantage", "High compatibility", "High complexity", "High divisibility"], 2,
+ ["Speeds adoption.", "Speeds adoption.", "Right: the harder it is to understand or use, the slower the adoption.", "Speeds adoption."], "buyer"),
+M("Business demand for steel ultimately depends on how many cars consumers buy. This is…", ["elastic demand", "derived demand", "latent demand", "negative demand"], 1,
+ ["Not about price sensitivity.", "Right.", "Latent is a strong unmet need.", "Negative means people dislike the product."], "buyer"),
+/* ch6 */
+M("Segmenting by 'non-users, first-time users, regular users' is segmentation by…", ["usage rate", "user status", "loyalty status", "benefits sought"], 1,
+ ["Usage rate is light, medium or heavy.", "Right.", "Loyalty is about attachment to a brand.", "Benefits are what people seek."], "stp"),
+M("Which targeting strategy fits a firm with very limited resources?", ["Undifferentiated", "Differentiated", "Concentrated (niche)", "Full market coverage"], 2,
+ ["Needs mass scale.", "Costly.", "Right.", "Not with limited resources."], "stp"),
+M("A difference is 'communicable' when…", ["competitors cannot copy it", "buyers can see it and understand it", "it is cheap", "it is profitable"], 1,
+ ["That is preemptive.", "Right.", "That is affordable (for buyers).", "That is profitable."], "stp"),
+M("Lecture: associations that a brand shares with competitors and must match to be credible are…", ["points of difference", "points of parity", "USPs", "value propositions"], 1,
+ ["Unique associations.", "Right.", "Unique.", "The whole positioning."], "stp"),
+/* ch7 */
+M("The number of different product lines a company carries is its product mix…", ["length", "depth", "width", "consistency"], 2,
+ ["Total items.", "Versions per product.", "Right.", "How related the lines are."], "brand"),
+M("Funeral services are typically…", ["convenience products", "shopping products", "specialty products", "unsought products"], 3,
+ ["No.", "No.", "No.", "Right: not normally thought of until needed."], "brand"),
+M("An empty seat on tonight's flight can never be sold again. This is service…", ["intangibility", "inseparability", "variability", "perishability"], 3,
+ ["No.", "No.", "No.", "Right."], "brand"),
+M("Which is evaluated mainly through CREDENCE qualities?", ["A T-shirt's colour", "A restaurant meal", "A medical diagnosis", "A car's price"], 2,
+ ["Search quality.", "Experience quality.", "Right: hard to judge even after consumption.", "Search quality."], "brand"),
+M("In Keller's brand resonance pyramid, the top level is…", ["salience", "performance and imagery", "judgments and feelings", "resonance"], 3,
+ ["Bottom.", "Meaning.", "Response.", "Right: an intense, active relationship."], "brand"),
+M("Why do retailers like private labels, according to the lecture?", ["They are less profitable", "Higher margins and they differentiate the store", "Manufacturers require them", "They need more advertising"], 1,
+ ["Wrong direction.", "Right.", "No.", "They need less."], "brand"),
+M("Positioning a brand on 'beliefs and values' is…", ["the weakest level", "the strongest level", "the same as attributes", "not allowed"], 1,
+ ["Attributes are weakest.", "Right: emotional and hard to copy.", "No.", "No."], "brand"),
+/* ch8 */
+M("Which NPD stage is the first idea-reducing stage?", ["Idea generation", "Idea screening", "Concept testing", "Commercialization"], 1,
+ ["Generates ideas.", "Right.", "Later.", "Last."], "brand"),
+M("In which PLC stage are sales and profits typically highest and competition strongest?", ["Introduction", "Growth", "Maturity", "Decline"], 2,
+ ["Low sales.", "Rising, not yet peak.", "Right: the longest stage.", "Falling."], "brand"),
+M("A fidget-spinner craze that rose and fell within months is a…", ["style", "fashion", "fad", "product class"], 2,
+ ["Lasts generations.", "Currently accepted style.", "Right.", "Longest life cycles."], "brand"),
+/* ch9 */
+M("What sets the price ceiling?", ["Product costs", "Customer perceptions of value", "Competitors' prices", "Government"], 1,
+ ["Costs set the floor.", "Right.", "Influence the price between the floor and the ceiling.", "No."], "price"),
+M("Fixed costs €60,000, price €25 and unit variable cost €10. Break-even volume?", ["2,400", "4,000", "6,000", "1,714"], 1,
+ ["Divides by the price.", "Right: 60,000 ÷ (25 − 10).", "Divides by variable cost.", "Wrong arithmetic."], "price"),
+M("Which pricing objective fits a firm with heavy overcapacity and intense competition?", ["Product-quality leadership", "Survival", "Market skimming", "Maximum current profit"], 1,
+ ["Needs premium positioning.", "Right: cover variable and some fixed costs.", "Needs buyers willing to pay a high price.", "Unrealistic under these conditions."], "price"),
+M("Selling razor handles cheaply and blades at high margins is…", ["by-product pricing", "captive-product pricing", "optional-product pricing", "bundle pricing"], 1,
+ ["Sells waste.", "Right.", "Extras sold with the main product.", "Combined at a reduced price."], "price"),
+M("In a Dutch auction…", ["bids rise until one buyer remains", "the auctioneer starts high and lowers the price until someone accepts", "bids are sealed", "there is no seller"], 1,
+ ["English auction.", "Right.", "Sealed-bid.", "No."], "price"),
+/* ch10–11 */
+M("When competitors' retailers fight a price war over the same brand, the lecture warns this can…", ["build brand equity", "erode brand equity", "reduce channel conflict", "create a VMS"], 1,
+ ["No.", "Right: more retailers mean more price competition.", "It increases conflict.", "No."], "place"),
+M("Which channel arrangement is held together by the size and power of one dominant member?", ["Corporate VMS", "Contractual VMS", "Administered VMS", "Conventional channel"], 2,
+ ["Ownership.", "Contracts.", "Right.", "Independent firms."], "place"),
+M("A PULL strategy is most appropriate when…", ["brand loyalty is low", "consumers choose the brand in the store", "consumers see differences between brands and choose before shopping", "the product is an impulse buy"], 2,
+ ["Push.", "Push.", "Right.", "Push."], "place"),
+M("A store with the highest service levels and operating costs is a…", ["self-service retailer", "limited-service retailer", "full-service retailer", "discount store"], 2,
+ ["Lowest costs.", "Middle.", "Right.", "Low costs."], "place"),
+/* ch12–13 */
+M("Which element of the communication process represents competing messages that distort what the receiver gets?", ["Encoding", "Media", "Noise", "Feedback"], 2,
+ ["Turning thought into symbols.", "Channels.", "Right.", "The receiver's response communicated back."], "promo"),
+M("In the awareness stage of buyer readiness, which tools matter most?", ["Personal selling", "Advertising and public relations", "Sales promotion", "Trade promotion"], 1,
+ ["Most important at conviction and ordering.", "Right.", "Short-term incentives.", "Reseller-oriented."], "promo"),
+M("Which advertising objective fits a mature brand like Coca-Cola?", ["Informative", "Persuasive", "Reminder", "Comparative"], 2,
+ ["New categories.", "Competitive growth stage.", "Right.", "A form of persuasive advertising."], "promo"),
+M("'Frequency' in media planning is…", ["the % of the target exposed", "how many times the average person is exposed", "the quality of an exposure", "the cost per thousand"], 1,
+ ["Reach.", "Right.", "Impact.", "Cost measure."], "promo"),
+M("Why can PR be more effective than advertising?", ["It is always free", "It is more credible to the audience", "It reaches only investors", "It guarantees sales"], 1,
+ ["Not free, but cheaper.", "Right: news is trusted more than ads.", "No.", "No."], "promo"),
+/* ch14–15 */
+M("Which is the most effective but most expensive way to introduce a new consumer product?", ["Coupons", "Samples", "Contests", "Premiums"], 1,
+ ["Cheaper.", "Right.", "Engagement tool.", "Incentive."], "promo"),
+M("Which step of the selling process comes right after the presentation?", ["Prospecting", "Handling objections", "Approach", "Follow-up"], 1,
+ ["First step.", "Right.", "Before the presentation.", "Last."], "promo"),
+M("Permission-based email marketing means…", ["sending to bought lists", "sending only to people who opted in, with an easy opt-out", "sending as often as possible", "using fake identities"], 1,
+ ["No.", "Right.", "Leads to irritation.", "Deceptive."], "promo"),
+M("Merchant wholesalers differ from brokers and agents because merchant wholesalers…", ["never stock goods", "take title to (own) the goods they sell", "work only for a commission", "only sell to final consumers"], 1,
+ ["Many merchant wholesalers hold stock.", "Right: brokers and agents don't take title.", "That describes brokers and agents.", "Selling to final consumers is retailing."], "place"),
+/* ch16 */
+M("Which international entry mode involves the highest commitment, control and risk?", ["Indirect exporting", "Licensing", "Joint ownership", "Direct investment"], 3,
+ ["Lowest.", "Low.", "Medium.", "Right: owning foreign production facilities."], "place"),
+M("Selling the same product unchanged in all countries is…", ["product adaptation", "straight product extension", "product invention", "communication adaptation"], 1,
+ ["Changes the product.", "Right.", "New products for foreign markets.", "About promotion."], "place"),
+/* ch17 + readings */
+M("Which is one of the book's sustainable marketing principles?", ["Product-oriented marketing", "Sense-of-mission marketing", "Selling-oriented marketing", "Short-term marketing"], 1,
+ ["The principle is consumer-oriented marketing.", "Right: define the mission in broad social terms.", "No.", "No."], "resp"),
+M("Products with high long-run benefit but low immediate appeal (e.g. seatbelts) are…", ["desirable products", "pleasing products", "salutary products", "deficient products"], 2,
+ ["High on both dimensions.", "High appeal, low benefit.", "Right.", "Low on both."], "resp"),
+M("Stoeckl & Luedicke: unsolicited advertising in public spaces and the spread of global chains belong to…", ["consumer deception and intrusion", "community co-optation and commercialization", "society seduction and degeneration", "human and natural resource exploitation"], 1,
+ ["About individual consumers.", "Right.", "About society's values and debt.", "About workers and the planet."], "resp"),
+M("Normalizing 'buy now, pay later' falls under which Stoeckl & Luedicke domain?", ["Consumer deception and intrusion", "Community co-optation and commercialization", "Society seduction and degeneration", "Human and natural resource exploitation"], 2,
+ ["No.", "No.", "Right: the credit–consumption–debt cycle.", "No."], "resp"),
+M("Smart meters that show households their energy use in real time use which SHIFT factor?", ["Social influence", "Habit formation", "Individual self", "Tangibility"], 1,
+ ["No social comparison here.", "Right: feedback helps form good habits (the Canvas example).", "Self-concept.", "Making impacts concrete and near."], "resp"),
+M("Which is NOT one of the three challenges to sustainable behaviour in White et al. (2019)?", ["Self–other trade-off", "Collective action problem", "Abstractness", "High product quality"], 3,
+ ["A challenge.", "A challenge.", "A challenge.", "Right: not one of the three."], "resp")
+  ]
+}]);
+})();
+
+</script>
+<script>
+/* Managerial Accounting: extra practice questions + AI-generated final exam (written by Claude) */
+(function () {
+const XM = (id, topic, q, o, a, w) => ({ id: "ma-x" + id, topic, q, o, a, w });
+const XN = (id, topic, q, a, show, sol, extra) => Object.assign({ id: "ma-x" + id, topic, t: "num", q, a, show, sol }, extra || {});
+const XO = (id, topic, q, model) => ({ id: "ma-x" + id, topic, t: "open", q, model });
+
+PORTAL.addExtra("ma", [
+/* ---- weeks 1–3 ---- */
+XN("1", "basics", "A machine's maintenance cost was €38,000 at 1,500 machine hours (the highest level) and €30,000 at 1,100 hours (the lowest). Using the high–low method, what is the variable cost per machine hour?", 20, "€20 per hour",
+ "b = (38,000 − 30,000) ÷ (1,500 − 1,100) = 8,000 ÷ 400 = <b>€20</b> per hour. Fixed part: a = 38,000 − 20 × 1,500 = €8,000. So y = 8,000 + 20X.", { unit: "€" }),
+XN("2", "basics", "Fixed costs are €240,000 per year and variable costs €15 per unit. What is the total cost per unit at 12,000 units?", 35, "€35",
+ "240,000 ÷ 12,000 = 20 fixed per unit + 15 variable = <b>€35</b>. At 16,000 units it would be 15 + 15 = €30: the fixed part per unit falls as volume rises.", { unit: "€" }),
+XM("3", "basics", "Which cost is a period cost for a furniture manufacturer?", ["Wood used in tables", "Factory supervisor's salary", "Sales commissions", "Depreciation on factory machines"], 2,
+ ["Direct materials: inventoriable.", "Manufacturing overhead: inventoriable.", "Right: selling costs are expensed in the period, not part of inventory.", "Manufacturing overhead: inventoriable."]),
+XN("4", "job", "Budgeted overhead is €900,000 and budgeted direct labour hours 60,000. A job uses 120 DLH, €3,000 of materials and €4,200 of direct labour. What is the job's total cost under normal costing?", 9000, "€9,000",
+ "Rate = 900,000 ÷ 60,000 = €15 per DLH. Overhead = 120 × 15 = 1,800. Total = 3,000 + 4,200 + 1,800 = <b>€9,000</b>.", { unit: "€" }),
+XN("5", "job", "Using a budgeted rate of €15 per DLH, 58,000 actual DLH were worked and actual overhead was €905,000. By how much is overhead under-allocated?", 35000, "€35,000 under-allocated",
+ "Allocated = 58,000 × 15 = 870,000. Actual 905,000 − 870,000 = <b>€35,000 under-allocated</b> (actual > allocated, so costs must be increased).", { unit: "€" }),
+XN("6", "job", "€60,000 of under-allocated overhead is prorated over closing balances: WIP €100,000, FG €300,000, COGS €1,600,000. How much goes to COGS?", 48000, "€48,000",
+ "Total balances = 2,000,000. COGS share = 1,600,000 ÷ 2,000,000 = 80% × 60,000 = <b>€48,000</b> (WIP gets 3,000; FG 9,000).", { unit: "€" }),
+XM("7", "abc", "Machine set-up costs vary with the number of production runs, not with units. In the cost hierarchy they are…", ["output unit-level", "batch-level", "product-sustaining", "facility-sustaining"], 1,
+ ["Unit-level costs vary with each unit.", "Right: they vary per batch, whatever the batch size.", "Product-sustaining costs support a whole product line (e.g. design).", "Facility-sustaining costs support the whole organization (e.g. rent)."]),
+XN("8", "abc", "Under ABC, ordering costs €250,000 for 500 orders. Product Q is ordered in batches of 25 units. What is the ordering cost per unit of Q?", 20, "€20",
+ "Rate = 250,000 ÷ 500 = €500 per order. Per unit = 500 ÷ 25 = <b>€20</b>.", { unit: "€" }),
+XM("9", "abc", "A firm switches from one labour-hour rate to ABC. Product S (small batches, many set-ups) gets a higher cost. What was happening before?", ["S was overcosted", "S was undercosted and other products subsidized it", "Total costs were wrong", "Nothing; ABC always raises costs"], 1,
+ ["The opposite.", "Right: S used more batch-level resources than labour hours showed.", "ABC redistributes costs; the total stays the same.", "ABC does not change total cost."]),
+XN("10", "alloc", "Direct method: IT costs €400,000, allocated on hours. IT gives 200 h to HR (support), 600 h to Production and 200 h to Sales. How much IT cost goes to Production?", 300000, "€300,000",
+ "The direct method ignores support departments: denominator = 600 + 200 = 800. Production = 600 ÷ 800 × 400,000 = <b>€300,000</b>.", { unit: "€" }),
+XM("11", "alloc", "In the step-down method, which support department should be allocated first?", ["The one with the highest costs", "The one that provides the largest share of its services to other support departments", "The one with the fewest employees", "Any order gives the same result"], 1,
+ ["Size isn't the rule in your course.", "Right: then nothing is allocated back to it.", "Not the rule.", "The order changes the result."]),
+XN("12", "alloc", "Joint cost €48,000 gives A (sales value at split-off €40,000) and B (€80,000). How much joint cost goes to A under the sales value at split-off method?", 16000, "€16,000",
+ "A = 40,000 ÷ 120,000 × 48,000 = <b>€16,000</b>; B gets €32,000.", { unit: "€" }),
+XM("13", "alloc", "Product C can be sold at split-off for €12 or processed further at €5 extra per unit and sold for €16. Joint costs per unit are €8. What should the firm do?", ["Process further, because €16 > €8 + €5", "Sell at split-off: incremental revenue €4 < incremental cost €5", "Process further, because the joint cost is covered", "Stop producing C"], 1,
+ ["Joint costs are irrelevant to this decision.", "Right: compare only incremental revenue and incremental cost.", "Joint costs are sunk at split-off.", "Not asked; C is profitable at split-off."]),
+XN("14", "process", "Weighted average: 8,000 units completed; closing WIP 2,000 units, 50% converted. Conversion costs (opening WIP + current) total €99,000. What is the conversion cost per equivalent unit?", 11, "€11",
+ "EU = 8,000 + 2,000 × 50% = 9,000. 99,000 ÷ 9,000 = <b>€11</b>.", { unit: "€" }),
+XN("15", "process", "FIFO: opening WIP 3,000 units (40% converted), started and completed 12,000, closing WIP 5,000 (20% converted). How many conversion EUs of work were done this period?", 14800, "14,800 EU",
+ "Finish opening WIP: 3,000 × 60% = 1,800. Started and completed 12,000. Closing WIP 5,000 × 20% = 1,000. Total = <b>14,800</b>.", { unit: "EU" }),
+XN("16", "vcac", "Fixed production costs €300,000; normal production 20,000 units; actual production 22,000; sales 19,000. By how much does absorption-costing profit exceed variable-costing profit?", 45000, "€45,000",
+ "Fixed cost per unit = 300,000 ÷ 20,000 = €15. Inventory rises by 22,000 − 19,000 = 3,000 units. 3,000 × 15 = <b>€45,000</b> more under absorption costing.", { unit: "€" }),
+XN("17", "vcac", "Same data (fixed €300,000, normal 20,000, actual production 22,000). What is the production-volume variance? (Answer the amount; F/U is in the solution.)", 30000, "€30,000 F",
+ "(22,000 − 20,000) × 15 = <b>€30,000 F</b>: more was produced than normal, so fixed costs were over-absorbed.", { unit: "€" }),
+/* ---- weeks 5–7 ---- */
+XN("18", "cvp", "Price €80, variable cost €50, fixed costs €270,000. Break-even in units?", 9000, "9,000 units",
+ "CM = 30. 270,000 ÷ 30 = <b>9,000 units</b>.", { unit: "units" }),
+XN("19", "cvp", "Same firm (CM €30, fixed €270,000). How many units for an after-tax profit of €36,000 at a 25% tax rate?", 10600, "10,600 units",
+ "Pre-tax = 36,000 ÷ 0.75 = 48,000. (270,000 + 48,000) ÷ 30 = <b>10,600</b>.", { unit: "units" }),
+XN("20", "cvp", "Sales are €500,000, variable costs €300,000 and fixed costs €150,000. What is break-even revenue?", 375000, "€375,000",
+ "CM ratio = 200,000 ÷ 500,000 = 40%. 150,000 ÷ 0.40 = <b>€375,000</b>. Margin of safety = €125,000.", { unit: "€" }),
+XN("21", "cvp", "Two products in a fixed 60/40 mix: A has CM €50, B has CM €25. Fixed costs €400,000. How many units in total to break even?", 10000, "10,000 units",
+ "Weighted CM = 0.6 × 50 + 0.4 × 25 = 40. 400,000 ÷ 40 = <b>10,000 units</b> (6,000 A + 4,000 B).", { unit: "units" }),
+XN("22", "relevant", "A firm with spare capacity gets a one-time order for 2,000 units at €45. Variable cost is €38 per unit; fixed costs (€500,000) don't change. What is the change in profit if it accepts?", 14000, "+€14,000",
+ "2,000 × (45 − 38) = <b>€14,000</b>. Fixed costs are irrelevant because they don't change.", { unit: "€" }),
+XN("23", "relevant", "Labour hours are scarce. Product X: CM €36, 4 labour hours. Product Y: CM €30, 2 hours. What is the CM per labour hour of the product that should get priority?", 15, "€15 per hour (Y)",
+ "X: 36 ÷ 4 = €9 per hour. Y: 30 ÷ 2 = <b>€15</b> per hour, so Y gets priority.", { unit: "€" }),
+XM("24", "relevant", "A machine bought 3 years ago for €100,000 has a book value of €40,000 and could be sold for €15,000. In a replacement decision, which amounts are relevant?", ["€100,000 and €40,000", "Only €40,000", "Only the €15,000 disposal value (plus future costs and savings)", "All three"], 2,
+ ["Both are sunk.", "Book value is sunk.", "Right: only future cash flows that differ between options.", "The past amounts are sunk."]),
+XN("25", "pricing", "The market price for a new product is €150 and the firm wants an operating profit of 20% of price. What is the target cost per unit?", 120, "€120",
+ "150 − 0.20 × 150 = <b>€120</b>. If current cost is higher, value engineering must close the gap.", { unit: "€" }),
+XN("26", "pricing", "Budgeted sales 24,000 units; target closing inventory 3,000; opening inventory 5,000. How many units must be produced?", 22000, "22,000 units",
+ "24,000 + 3,000 − 5,000 = <b>22,000</b>.", { unit: "units" }),
+XN("27", "variance", "Budget: 2 kg per unit at €6/kg. Actual: 5,000 units used 10,600 kg bought at €5.80/kg. What is the materials efficiency variance? (Amount; F/U in solution.)", 3600, "€3,600 U",
+ "Allowed = 10,000 kg. (10,600 − 10,000) × 6 = <b>€3,600 U</b>. Price variance = 10,600 × (6 − 5.80) = €2,120 F.", { unit: "€" }),
+XN("28", "variance", "Inputs A and B are substitutable; budgeted mix 50/50 at budgeted prices A €10 and B €20. Actual total input 1,000 kg (600 A, 400 B). What is the total mix variance? (Amount; F/U in solution.)", 1000, "€1,000 F",
+ "Mix variance = (budgeted mix − actual mix) × actual total input × budgeted price.<br>A: (50% − 60%) × 1,000 × 10 = <b>1,000 U</b>. B: (50% − 40%) × 1,000 × 20 = <b>2,000 F</b>. Total = <b>€1,000 F</b>: a cheaper mix was used (more of the €10 input).", { unit: "€" }),
+XN("29", "control", "Supplying division: variable cost €30, market price €50. It is at full capacity. What is the minimum transfer price?", 50, "€50",
+ "Min TP = variable cost 30 + opportunity cost (50 − 30) = <b>€50</b>, i.e. the market price. With spare capacity it would be €30.", { unit: "€" }),
+XN("30", "control", "A division earns €900,000 on an investment of €6,000,000; required return 12%. What is its residual income?", 180000, "€180,000",
+ "RI = 900,000 − 0.12 × 6,000,000 = 900,000 − 720,000 = <b>€180,000</b>. ROI = 15%.", { unit: "€" }),
+XN("31", "ops", "Annual demand 7,200 units, ordering cost €40 per order, carrying cost €4 per unit per year. What is the EOQ?", 380, "≈ 379–380 units",
+ "EOQ = √(2 × 7,200 × 40 ÷ 4) = √144,000 = <b>379.5 ≈ 380</b> units.", { unit: "units", tol: 1 }),
+XM("32", "ops", "Warranty repairs on products already sold are which cost of quality?", ["Prevention", "Appraisal", "Internal failure", "External failure"], 3,
+ ["Prevention stops defects from arising.", "Appraisal detects defects (inspection).", "Internal failure is found before the customer gets the product.", "Right: the defect reached the customer."]),
+XO("33", "ops", "Name the four perspectives of the balanced scorecard and give one measure for each.",
+ "<b>Financial</b>: operating profit, revenue growth, ROI. <b>Customer</b>: market share, customer satisfaction, retention. <b>Internal business process</b>: defect rate, cycle time, new products launched. <b>Learning and growth</b>: employee training hours, employee satisfaction, IT availability. A good scorecard links them by cause and effect: learning → processes → customers → financial results.")
+]);
+
+/* ================================ AI-GENERATED EXAM ================================ */
+const N = (q, a, show, sol, pts, extra) => Object.assign({ t: "num", q, a, show, sol, pts }, extra || {});
+const O = (q, model, pts, extra) => Object.assign({ t: "open", q, model, pts }, extra || {});
+const E = (q, o, a, w, pts, extra) => Object.assign({ q, o, a, w, pts, keepOrder: true }, extra || {});
+
+const cases = {
+  tulip: "<b>Question 1 · Tulip Dairy (25 points).</b> Tulip Dairy produces one type of yoghurt in a continuous process. Materials are added at the start; conversion costs are added evenly. September:<div class='tablewrap'><table><tr><th></th><th>Litres</th><th>Materials</th><th>Conversion</th></tr><tr><td>Opening WIP</td><td>10,000</td><td>€42,000 (100%)</td><td>€12,000 (40%)</td></tr><tr><td>Started</td><td>90,000</td><td>€378,000</td><td>€246,500</td></tr><tr><td>Completed</td><td>85,000</td><td></td><td></td></tr><tr><td>Closing WIP</td><td>15,000</td><td>100%</td><td>60%</td></tr></table></div>Tulip uses the <b>weighted-average</b> method. Fixed production overhead is €120,000 per month and normal production is 80,000 litres per month.",
+  velo: "<b>Question 2 · Velo Rotterdam (25 points).</b> Velo Rotterdam makes e-bike conversion kits. Price €400 per kit; variable cost €240 per kit; fixed costs €1,280,000 per year. Annual capacity is 12,000 kits; budgeted sales are 10,000 kits. The tax rate is 20%.",
+  hydra: "<b>Question 3 · Hydra Group (30 points).</b> Hydra has two divisions. <b>Pump division</b>: budget 3 direct labour hours per pump at €40 per hour. In March it made 2,000 pumps using 6,400 labour hours, costing €249,600 in total. Each pump sells for €520 and needs one motor; the Pump division's own variable cost is €300 per pump (excluding the motor). <b>Motor division</b>: variable cost €90 per motor; motors can also be sold outside at €150. The Pump division earns €1,800,000 per year on an investment of €12,000,000; Hydra's cost of capital is 12%."
+};
+
+const qs = [
+/* Q1 Tulip (weeks 1–3) */
+N("1a · Weighted average: total cost of the <b>completed output</b> (85,000 litres).", 590750, "€590,750",
+ "<b>EU</b>: materials = 85,000 + 15,000 × 100% = 100,000; conversion = 85,000 + 15,000 × 60% = 94,000.<br><b>Cost per EU</b>: materials (42,000 + 378,000) ÷ 100,000 = €4.20; conversion (12,000 + 246,500) ÷ 94,000 = €2.75.<br>Completed = 85,000 × (4.20 + 2.75) = <b>€590,750</b>.", 6, { case: "tulip", label: "Question 1a", unit: "€" }),
+N("1b · Weighted average: cost of the <b>closing WIP</b>.", 87750, "€87,750",
+ "15,000 × 4.20 = 63,000 + 9,000 × 2.75 = 24,750 → <b>€87,750</b>. Check: 590,750 + 87,750 = 678,500 = 42,000 + 12,000 + 378,000 + 246,500 ✓.", 4, { case: "tulip", label: "Question 1b", unit: "€" }),
+O("1c · Would FIFO value the closing WIP higher or lower than weighted average here? Explain using the cost per EU (no full FIFO calculation needed).",
+ "Materials cost the same per litre in both periods (42,000 ÷ 10,000 = €4.20 and 378,000 ÷ 90,000 = €4.20), so only conversion matters. Opening WIP conversion cost €12,000 ÷ 4,000 EU = €3.00 per EU. Current-period FIFO conversion cost = 246,500 ÷ (6,000 + 75,000 + 9,000 = 90,000 EU) ≈ €2.74. Prices <b>fell</b>, so FIFO, which values closing WIP at current prices only, gives a <b>lower</b> closing WIP (about 9,000 × 2.74 + 63,000 ≈ €87,650) than weighted average, which mixes in the more expensive opening WIP.", 4, { case: "tulip", label: "Question 1c" }),
+N("1d · In September Tulip produced 85,000 litres and sold 80,000. By how much does operating profit under <b>absorption costing</b> exceed profit under <b>variable costing</b>?", 7500, "€7,500",
+ "Fixed cost per litre = 120,000 ÷ 80,000 = €1.50. Inventory rises by 5,000 litres. 5,000 × 1.50 = <b>€7,500</b> higher under absorption costing (that part of fixed costs stays in inventory).", 5, { case: "tulip", label: "Question 1d", unit: "€" }),
+E("1e · What is September's production-volume variance under absorption costing?",
+ ["€7,500 favourable", "€7,500 unfavourable", "€0, because sales equal normal production", "€127,500 favourable"], 0,
+ ["Right: (85,000 − 80,000) × €1.50 = €7,500 F: production above normal, so fixed costs were over-absorbed.", "Production was above normal, which is favourable.", "The PVV compares production, not sales, with normal production.", "That adds the total fixed costs: wrong."], 3, { case: "tulip", label: "Question 1e" }),
+O("1f · Explain why absorption costing can tempt a production manager to overproduce, and give one measure that reduces this temptation.",
+ "Under absorption costing, fixed production costs are part of inventory cost. If production exceeds sales, part of the fixed costs is <b>deferred in closing inventory</b> instead of being expensed, so reported profit rises without any extra sales. Countermeasures: evaluate on variable costing; charge managers a carrying cost for inventory; use longer evaluation periods; add non-financial measures; limit inventory build-up.", 3, { case: "tulip", label: "Question 1f" }),
+/* Q2 Velo (week 5) */
+N("2a · Break-even point in kits.", 8000, "8,000 kits",
+ "CM = 400 − 240 = €160. 1,280,000 ÷ 160 = <b>8,000 kits</b>.", 4, { case: "velo", label: "Question 2a", unit: "kits" }),
+N("2b · How many kits must Velo sell to earn an <b>after-tax</b> profit of €192,000?", 9500, "9,500 kits",
+ "Pre-tax profit = 192,000 ÷ (1 − 0.20) = 240,000. (1,280,000 + 240,000) ÷ 160 = <b>9,500 kits</b>.", 5, { case: "velo", label: "Question 2b", unit: "kits" }),
+N("2c · Margin of safety in euros at budgeted sales.", 800000, "€800,000",
+ "Budgeted revenue 10,000 × 400 = 4,000,000 − break-even revenue 8,000 × 400 = 3,200,000 = <b>€800,000</b>.", 3, { case: "velo", label: "Question 2c", unit: "€" }),
+N("2d · A one-time customer offers to buy 1,500 kits at €300 each. Extra shipping costs €10 per kit. Velo has 2,000 kits of spare capacity. What is the change in operating profit if Velo accepts?", 75000, "+€75,000 (accept)",
+ "Incremental revenue 300 − variable cost 240 − shipping 10 = €50 per kit. 1,500 × 50 = <b>+€75,000</b>. Fixed costs don't change, so they are irrelevant.", 5, { case: "velo", label: "Question 2d", unit: "€" }),
+N("2e · Suppose the order were for <b>3,000</b> kits instead (same terms). Velo can only do this by giving up 1,000 regular sales. What is the change in operating profit? (Type a negative number for a decrease.)", -10000, "−€10,000 (reject)",
+ "Order contribution 3,000 × 50 = 150,000. Lost regular contribution 1,000 × 160 = 160,000 (the opportunity cost). Net = <b>−€10,000</b>, so reject. Alternatively the minimum acceptable price is 240 + 10 + 1,000 × 160 ÷ 3,000 ≈ €303.33.", 5, { case: "velo", label: "Question 2e", unit: "€" }),
+O("2f · Give two qualitative factors Velo should consider before accepting the one-time order in 2d.",
+ "Any two, briefly explained: (1) <b>Reaction of regular customers</b>, who may demand the lower price too; (2) whether the order is really <b>one-time</b> or sets a precedent; (3) <b>capacity and quality risks</b> (overtime, delays for regular customers); (4) <b>strategic value</b> of the new customer or market; (5) legal issues such as price discrimination.", 3, { case: "velo", label: "Question 2f" }),
+/* Q3 Hydra (weeks 6–7) */
+N("3a · Total <b>flexible-budget variance</b> for direct labour in March (amount; F/U is in the solution).", [9600, -9600], "€9,600 U",
+ "Flexible budget = 2,000 × 3 × 40 = 240,000. Actual 249,600 → <b>€9,600 U</b>.", 3, { case: "hydra", label: "Question 3a", unit: "€" }),
+N("3b · Labour <b>price (rate) variance</b>.", [6400, -6400], "€6,400 F",
+ "Actual rate = 249,600 ÷ 6,400 = €39. 6,400 × (40 − 39) = <b>€6,400 F</b>.", 3, { case: "hydra", label: "Question 3b", unit: "€" }),
+N("3c · Labour <b>efficiency variance</b>.", [16000, -16000], "€16,000 U",
+ "Allowed hours = 2,000 × 3 = 6,000. (6,400 − 6,000) × 40 = <b>€16,000 U</b>. Check: 6,400 F − 16,000 U = 9,600 U ✓.", 3, { case: "hydra", label: "Question 3c", unit: "€" }),
+O("3d · Give one possible explanation that links the favourable price variance to the unfavourable efficiency variance.",
+ "Hydra may have hired <b>cheaper, less experienced workers</b> (lower rate → price variance F), who needed more hours per pump (efficiency variance U). Variances interact, so investigate the cause before blaming the purchasing/HR side or production.", 3, { case: "hydra", label: "Question 3d" }),
+N("3e · The Motor division has <b>spare capacity</b>. What is the minimum transfer price per motor?", 90, "€90",
+ "Min TP = incremental cost 90 + opportunity cost 0 = <b>€90</b>.", 3, { case: "hydra", label: "Question 3e", unit: "€" }),
+N("3f · The Motor division is at <b>full capacity</b> and can sell all motors outside. What is the minimum transfer price?", 150, "€150",
+ "Min TP = 90 + (150 − 90) = <b>€150</b>, the market price. The Pump division can pay at most 520 − 300 = €220, so the transfer still makes sense for Hydra.", 3, { case: "hydra", label: "Question 3f", unit: "€" }),
+N("3g · The Pump division considers a project: invest €3,000,000 to earn €420,000 per year. What would the division's ROI be <b>with</b> the project (in %)?", 14.8, "14.8%",
+ "(1,800,000 + 420,000) ÷ (12,000,000 + 3,000,000) = 2,220,000 ÷ 15,000,000 = <b>14.8%</b> (now 15%).", 3, { case: "hydra", label: "Question 3g", unit: "%", tol: 0.06 }),
+N("3h · By how much does the division's <b>residual income</b> change if it takes the project?", 60000, "+€60,000",
+ "Project RI = 420,000 − 12% × 3,000,000 = 420,000 − 360,000 = <b>+€60,000</b>.", 3, { case: "hydra", label: "Question 3h", unit: "€" }),
+E("3i · The Pump manager's bonus depends on ROI. What will the manager do, and what is best for Hydra?",
+ ["Reject (ROI falls from 15% to 14.8%), although Hydra should accept (14% project return > 12% cost of capital)", "Accept, and Hydra should accept", "Reject, and Hydra should reject", "Accept, although Hydra should reject"], 0,
+ ["Right: a classic goal-congruence problem. The project earns 420,000 ÷ 3,000,000 = 14% > 12%, so RI rises, but the division's ROI falls.", "The manager loses ROI, so will reject.", "Hydra gains €60,000 of RI.", "Reversed."], 3, { case: "hydra", label: "Question 3i" }),
+O("3j · Name the four perspectives of the balanced scorecard and give one measure for each that Hydra's Pump division could use.",
+ "<b>Financial</b>: ROI, RI or operating profit. <b>Customer</b>: on-time delivery, customer satisfaction, market share. <b>Internal business process</b>: labour hours per pump (efficiency), defect rate. <b>Learning and growth</b>: training hours per employee, employee turnover.", 3, { case: "hydra", label: "Question 3j" })
+];
+
+PORTAL.addExams("ma", [{
+  id: "ai1", ai: true, kind: "AI generated exam (by Claude)", title: "MA practice final: 3 cases, 80 points",
+  sub: "Tulip Dairy (process costing, VC vs AC) · Velo Rotterdam (CVP, special orders) · Hydra Group (variances, transfer pricing, ROI/RI, balanced scorecard).",
+  info: "This exam was written by Claude in the style of the 2021 and 2023 finals: open questions with calculations plus theory, about 1/3 on weeks 1–3 and 2/3 on weeks 5–7. Type numbers in the boxes (1,234 and 1.234 both work). Write open answers in full, then self-mark them against the model answers after submitting.",
+  minutes: 120, grading: { type: "points" },
+  gradingText: "Grade = points ÷ 8 (80 points). Calculation parts are checked automatically; open parts are self-marked: full, half or no points.",
+  cases, questions: qs
+}]);
+})();
 
 </script>
 </body>
